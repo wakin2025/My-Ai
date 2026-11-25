@@ -19,7 +19,7 @@ import kotlin.concurrent.thread
 class MainActivity : Activity() {
 
     // Jodi "model not found" error ashe, ei naam-ta bodle dao
-    private val MODEL = "gemini-2.5-flash"
+    private val MODEL = "gemini-3.8-flash"
 
     private val SYSTEM = "Tumi Wakin-er personal AI assistant. " +
         "Se Banglish ba Bangla-e likhle tumi-o shei vashay chhoto, shohoj uttor dao."
