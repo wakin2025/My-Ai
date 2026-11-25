@@ -18,8 +18,12 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
-    // Jodi "model not found" error ashe, ei naam-ta bodle dao
-    private val MODEL = "gemini-3.8-flash"
+    // Prothom model-ta kaj na korle app nijei porer model try korbe
+    private val MODELS = listOf(
+        "gemini-3.8-flash",
+        "gemini-3.5-flash-lite",
+        "gemini-3.1-flash-lite"
+    )
 
     private val SYSTEM = "Tumi Wakin-er personal AI assistant. " +
         "Se Banglish ba Bangla-e likhle tumi-o shei vashay chhoto, shohoj uttor dao."
@@ -142,8 +146,27 @@ class MainActivity : Activity() {
         }
     }
 
+    // Model bhul/busy hole nijei abar try kore, tarpor porer model-e jay
     private fun callGemini(key: String): String {
-        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$MODEL:generateContent")
+        var lastError = "Kono model-e uttor pawa jayni"
+        for (model in MODELS) {
+            for (attempt in 1..2) {
+                val result = request(key, model)
+                val code = result.first
+                val resp = result.second
+                if (code in 200..299) return parseReply(resp)
+
+                lastError = "HTTP $code ($model): " + resp.take(150)
+                if (code == 404) break
+                if (code !in listOf(429, 500, 503, 504)) throw Exception(lastError)
+                if (attempt == 1) Thread.sleep(2000)
+            }
+        }
+        throw Exception(lastError)
+    }
+
+    private fun request(key: String, model: String): Pair<Int, String> {
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
@@ -162,13 +185,21 @@ class MainActivity : Activity() {
 
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
-        val resp = stream.bufferedReader().use { it.readText() }
-        if (code !in 200..299) throw Exception("HTTP $code: " + resp.take(300))
+        val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
+        return Pair(code, resp)
+    }
 
-        return JSONObject(resp)
-            .getJSONArray("candidates").getJSONObject(0)
-            .getJSONObject("content")
-            .getJSONArray("parts").getJSONObject(0)
-            .getString("text").trim()
+    private fun parseReply(resp: String): String {
+        val empty = "(AI kono uttor dey nai, abar try koro)"
+        val candidates = JSONObject(resp).optJSONArray("candidates")
+        if (candidates == null || candidates.length() == 0) return empty
+        val parts = candidates.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts")
+        if (parts == null || parts.length() == 0) return empty
+        val sb = StringBuilder()
+        for (i in 0 until parts.length()) {
+            sb.append(parts.getJSONObject(i).optString("text"))
+        }
+        val out = sb.toString().trim()
+        return if (out.isEmpty()) empty else out
     }
 }
