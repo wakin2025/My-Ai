@@ -21,6 +21,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
 
@@ -37,6 +39,17 @@ class MainActivity : Activity() {
         "Uttor chhoto ar shohoj rakho. Uttor jore pora hobe, tai star (*), markdown, emoji bebohar korbe na. " +
         "User Bangla lipi-te (বাংলা) likhle ba bolle tumi-o Bangla lipi-te uttor dao. " +
         "Banglish-e likhle Banglish-e dao. English-e likhle English-e dao."
+
+    private class Reply(val text: String, val note: String)
+
+    private fun systemText(): String {
+        val now = SimpleDateFormat("EEEE, d MMMM yyyy, HH:mm", Locale.ENGLISH).format(Date())
+        return SYSTEM +
+            " Ekhon shomoy: $now (24-hour). " +
+            "User alarm set korte, dekhte, bondho korte ba mushe dite chaile function call koro, " +
+            "nijer theke bole dio na je kaj hoye geche. Shomoy shob shomoy 24-hour e dao " +
+            "(jemon ratri 9 tay = 21, bikel 4 tay = 16, shokal 7 tay = 7)."
+    }
 
     private lateinit var chatView: TextView
     private lateinit var scroll: ScrollView
@@ -283,10 +296,12 @@ class MainActivity : Activity() {
         thread {
             try {
                 val reply = callGemini(key)
-                history.put(message("model", reply))
+                history.put(message("model", reply.text))
                 runOnUiThread {
-                    append("AI: $reply\n\n")
-                    if (shouldSpeak) speak(reply)
+                    append("AI: ${reply.text}\n")
+                    if (reply.note.isNotEmpty()) append("(${reply.note})\n")
+                    append("\n")
+                    if (shouldSpeak) speak(reply.text)
                 }
             } catch (e: Exception) {
                 history.remove(history.length() - 1)
@@ -296,7 +311,7 @@ class MainActivity : Activity() {
     }
 
     // Model bhul/busy hole nijei abar try kore, tarpor porer model-e jay
-    private fun callGemini(key: String): String {
+    private fun callGemini(key: String): Reply {
         var lastError = "Kono model-e uttor pawa jayni"
         for (model in MODELS) {
             for (attempt in 1..2) {
@@ -327,8 +342,9 @@ class MainActivity : Activity() {
         val body = JSONObject()
             .put(
                 "system_instruction",
-                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM)))
+                JSONObject().put("parts", JSONArray().put(JSONObject().put("text", systemText())))
             )
+            .put("tools", tools())
             .put("contents", history)
         conn.outputStream.use { it.write(body.toString().toByteArray()) }
 
@@ -338,17 +354,131 @@ class MainActivity : Activity() {
         return Pair(code, resp)
     }
 
-    private fun parseReply(resp: String): String {
-        val empty = "(AI kono uttor dey nai, abar try koro)"
+    private fun parseReply(resp: String): Reply {
+        val empty = Reply("(AI kono uttor dey nai, abar try koro)", "")
         val candidates = JSONObject(resp).optJSONArray("candidates")
         if (candidates == null || candidates.length() == 0) return empty
         val parts = candidates.getJSONObject(0).optJSONObject("content")?.optJSONArray("parts")
         if (parts == null || parts.length() == 0) return empty
-        val sb = StringBuilder()
+
+        val texts = ArrayList<String>()
+        val notes = ArrayList<String>()
         for (i in 0 until parts.length()) {
-            sb.append(parts.getJSONObject(i).optString("text"))
+            val p = parts.getJSONObject(i)
+            val fc = p.optJSONObject("functionCall")
+            if (fc != null) {
+                val r = runAction(fc.optString("name"), fc.optJSONObject("args"))
+                if (r.first.isNotEmpty()) texts.add(r.first)
+                if (r.second.isNotEmpty()) notes.add(r.second)
+            } else {
+                val t = p.optString("text")
+                if (t.isNotEmpty()) texts.add(t)
+            }
         }
-        val out = sb.toString().trim()
-        return if (out.isEmpty()) empty else out
+        val text = texts.joinToString(" ").trim()
+        if (text.isEmpty()) return empty
+        return Reply(text, notes.joinToString("\n"))
+    }
+
+    // AI jei kaj korte bole, shetar asol kaj ekhane hoy
+    private fun runAction(name: String, args: JSONObject?): Pair<String, String> {
+        val a = args ?: JSONObject()
+        val reply = a.optString("reply", "Thik ache.")
+        val label = a.optString("label", "Alarm").ifBlank { "Alarm" }
+        return when (name) {
+            "set_alarm" -> {
+                val h = a.optInt("hour", -1)
+                val m = a.optInt("minute", 0)
+                if (h !in 0..23 || m !in 0..59) {
+                    Pair("Shomoy bujhte parini, abar bolo.", "")
+                } else {
+                    val t = Alarms.setAt(this, h, m, label)
+                    Pair(reply, "Alarm: " + Alarms.format(t))
+                }
+            }
+            "set_alarm_in" -> {
+                val min = a.optInt("minutes", -1)
+                if (min < 1) {
+                    Pair("Koto minute por, bujhte parini.", "")
+                } else {
+                    val t = Alarms.setIn(this, min, label)
+                    Pair(reply, "Alarm: " + Alarms.format(t))
+                }
+            }
+            "list_alarms" -> Pair(reply, Alarms.describe(this))
+            "stop_alarm" -> {
+                Alarms.stopRinging(this)
+                Pair(reply, "")
+            }
+            "cancel_all_alarms" -> {
+                val n = Alarms.cancelAll(this)
+                Pair(reply, "$n ta alarm mushe geche")
+            }
+            else -> Pair(reply, "")
+        }
+    }
+
+    private fun fn(name: String, desc: String, props: JSONObject, required: List<String>): JSONObject =
+        JSONObject()
+            .put("name", name)
+            .put("description", desc)
+            .put(
+                "parameters",
+                JSONObject()
+                    .put("type", "OBJECT")
+                    .put("properties", props)
+                    .put("required", JSONArray(required))
+            )
+
+    private fun tools(): JSONArray {
+        val reply = JSONObject().put("type", "STRING").put(
+            "description",
+            "User-er bhashay (Bangla lipi / Banglish / English) ek-duo line-er confirmation. " +
+                "Jore pora hobe, tai emoji ba star dio na."
+        )
+        val label = JSONObject().put("type", "STRING")
+            .put("description", "Alarm-er naam. Na thakle Alarm")
+        val hour = JSONObject().put("type", "INTEGER")
+            .put("description", "24-hour format-e ghonta, 0 theke 23")
+        val minute = JSONObject().put("type", "INTEGER")
+            .put("description", "Minute, 0 theke 59")
+        val minutes = JSONObject().put("type", "INTEGER")
+            .put("description", "Ekhon theke koto minute por")
+
+        val decls = JSONArray()
+            .put(
+                fn(
+                    "set_alarm", "Nirdishto shomoye alarm set kore",
+                    JSONObject().put("hour", hour).put("minute", minute)
+                        .put("label", label).put("reply", reply),
+                    listOf("hour", "minute", "reply")
+                )
+            )
+            .put(
+                fn(
+                    "set_alarm_in", "Ekhon theke kichu minute por alarm ba timer set kore",
+                    JSONObject().put("minutes", minutes).put("label", label).put("reply", reply),
+                    listOf("minutes", "reply")
+                )
+            )
+            .put(
+                fn(
+                    "list_alarms", "Set kora alarm-er talika dekhay",
+                    JSONObject().put("reply", reply), listOf("reply")
+                )
+            )
+            .put(
+                fn(
+                    "stop_alarm", "Ekhon bajte thaka alarm bondho kore",
+                    JSONObject().put("reply", reply), listOf("reply")
+                )
+            )
+            .put(
+                fn(
+                    "cancel_all_alarms", "Shob set kora alarm mushe dey",
+                    JSONObject().put("reply", reply), listOf("reply")
+                )
+            )
+        return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 }
