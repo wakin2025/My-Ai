@@ -121,6 +121,27 @@ object Alarms {
         return arr.length()
     }
 
+    // Shobcheye kachher (porer) alarm-ta mushe dey, shomoy ferot dey
+    fun cancelNext(ctx: Context): Long? {
+        val arr = load(ctx)
+        if (arr.length() == 0) return null
+        var best = 0
+        var bestTime = Long.MAX_VALUE
+        for (i in 0 until arr.length()) {
+            val t = arr.getJSONObject(i).getLong("time")
+            if (t < bestTime) {
+                bestTime = t
+                best = i
+            }
+        }
+        val o = arr.getJSONObject(best)
+        val id = o.getInt("id")
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        am.cancel(pending(ctx, id, o.optString("label")))
+        remove(ctx, id)
+        return bestTime
+    }
+
     fun rescheduleAll(ctx: Context) {
         val arr = load(ctx)
         val out = JSONArray()
