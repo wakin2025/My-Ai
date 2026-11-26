@@ -183,53 +183,103 @@ object Wishes {
 object WaContacts {
     class Match(val name: String, val number: String)
 
-    fun find(ctx: Context, names: List<String>): Match? {
-        for (n in names) {
-            if (n.isBlank()) continue
-            val m = findWhatsApp(ctx, n.trim()) ?: findPhone(ctx, n.trim())
-            if (m != null) return m
+    // match: ekjon paoa gele; ambiguous: ekadhik jon mile gele tader naam
+    class Found(val match: Match?, val ambiguous: List<String>)
+
+    private const val WA_MIME = "vnd.android.cursor.item/vnd.com.whatsapp.profile"
+
+    fun find(ctx: Context, names: List<String>): Found {
+        val qs = names.map { it.trim().lowercase(Locale.ROOT) }.filter { it.isNotEmpty() }
+        if (qs.isEmpty()) return Found(null, emptyList())
+
+        val wa = ArrayList<Match>()
+        val ph = ArrayList<Match>()
+        load(ctx, wa, ph)
+
+        // Age WhatsApp contact-er modhye khuje, na pele phone-er contact-e
+        for (list in listOf(wa, ph)) {
+            val r = pick(list, qs)
+            if (r.match != null || r.ambiguous.isNotEmpty()) return r
         }
-        return null
+        return Found(null, emptyList())
     }
 
-    // WhatsApp nijer contact-row-te puro international number rakhe
-    private fun findWhatsApp(ctx: Context, n: String): Match? {
-        val c = ctx.contentResolver.query(
-            ContactsContract.Data.CONTENT_URI,
-            arrayOf(ContactsContract.Data.DISPLAY_NAME, ContactsContract.Data.DATA1),
-            ContactsContract.Data.MIMETYPE + "=? AND " + ContactsContract.Data.DISPLAY_NAME + " LIKE ?",
-            arrayOf("vnd.android.cursor.item/vnd.com.whatsapp.profile", "%$n%"),
-            null
-        ) ?: return null
-        c.use {
-            while (it.moveToNext()) {
-                val jid = it.getString(1) ?: continue
-                val digits = jid.substringBefore("@").filter { ch -> ch.isDigit() }
-                if (digits.length >= 8) return Match(it.getString(0) ?: n, digits)
+    // 1) puro naam mile 2) naam-er vitore thake 3) kachakachi (1-2 okkhor bhul, jemon Ashraf/Ashruf)
+    private fun pick(list: List<Match>, qs: List<String>): Found {
+        val steps = listOf<(String, String) -> Boolean>(
+            { n, q -> n == q },
+            { n, q -> n.contains(q) },
+            { n, q -> q.length >= 5 && close(n, q) }
+        )
+        for (test in steps) {
+            val hits = list.filter { m ->
+                val n = m.name.lowercase(Locale.ROOT)
+                qs.any { q -> test(n, q) }
+            }
+            val distinct = hits.distinctBy { it.number }
+            if (distinct.size == 1) return Found(distinct[0], emptyList())
+            if (distinct.size > 1) {
+                return Found(null, distinct.map { it.name }.distinct().take(4))
             }
         }
-        return null
+        return Found(null, emptyList())
     }
 
-    private fun findPhone(ctx: Context, n: String): Match? {
-        val c = ctx.contentResolver.query(
+    private fun close(name: String, q: String): Boolean {
+        val words = name.split(" ", "-", ".", "_").filter { it.isNotEmpty() }
+        val limit = maxOf(1, q.length / 4)
+        return (words + name).any { lev(it, q) <= limit }
+    }
+
+    private fun lev(a: String, b: String): Int {
+        if (a == b) return 0
+        var prev = IntArray(b.length + 1) { it }
+        for (i in 1..a.length) {
+            val cur = IntArray(b.length + 1)
+            cur[0] = i
+            for (j in 1..b.length) {
+                val cost = if (a[i - 1] == b[j - 1]) 0 else 1
+                cur[j] = minOf(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+            }
+            prev = cur
+        }
+        return prev[b.length]
+    }
+
+    private fun load(ctx: Context, wa: MutableList<Match>, ph: MutableList<Match>) {
+        // WhatsApp nijer contact-row-te puro international number rakhe
+        ctx.contentResolver.query(
+            ContactsContract.Data.CONTENT_URI,
+            arrayOf(ContactsContract.Data.DISPLAY_NAME, ContactsContract.Data.DATA1),
+            ContactsContract.Data.MIMETYPE + "=?",
+            arrayOf(WA_MIME),
+            null
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(0) ?: continue
+                val jid = c.getString(1) ?: continue
+                val digits = jid.substringBefore("@").filter { ch -> ch.isDigit() }
+                if (digits.length >= 8) wa.add(Match(name, digits))
+            }
+        }
+
+        ctx.contentResolver.query(
             ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
             arrayOf(
                 ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME,
                 ContactsContract.CommonDataKinds.Phone.NUMBER
             ),
-            ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME + " LIKE ?",
-            arrayOf("%$n%"),
+            null,
+            null,
             null
-        ) ?: return null
-        c.use {
-            while (it.moveToNext()) {
-                val raw = it.getString(1) ?: continue
+        )?.use { c ->
+            while (c.moveToNext()) {
+                val name = c.getString(0) ?: continue
+                val raw = c.getString(1) ?: continue
                 val num = normalize(ctx, raw) ?: continue
-                return Match(it.getString(0) ?: n, num)
+                ph.add(Match(name, num))
             }
         }
-        return null
     }
 
     private fun normalize(ctx: Context, raw: String): String? {
