@@ -407,8 +407,17 @@ class MainActivity : Activity() {
             }
             "list_alarms" -> Pair(reply, Alarms.describe(this))
             "stop_alarm" -> {
-                Alarms.stopRinging(this)
-                Pair(reply, "")
+                if (RingService.running) {
+                    Alarms.stopRinging(this)
+                    Pair(reply, "")
+                } else {
+                    val t = Alarms.cancelNext(this)
+                    if (t != null) {
+                        Pair(reply, "Porer alarm mushe geche: " + Alarms.format(t))
+                    } else {
+                        Pair("Kono alarm bajchhe na, ar set kora alarm-o nai.", "")
+                    }
+                }
             }
             "cancel_all_alarms" -> {
                 val n = Alarms.cancelAll(this)
@@ -469,7 +478,7 @@ class MainActivity : Activity() {
             )
             .put(
                 fn(
-                    "stop_alarm", "Ekhon bajte thaka alarm bondho kore",
+                    "stop_alarm", "Ekhon bajte thaka alarm bondho kore. Alarm na bajle porer (shobcheye kachher) alarm-ta mushe dey",
                     JSONObject().put("reply", reply), listOf("reply")
                 )
             )
