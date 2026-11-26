@@ -1,8 +1,15 @@
 package com.wakin.myai
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -14,6 +21,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
+import java.util.Locale
 import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
@@ -26,20 +34,41 @@ class MainActivity : Activity() {
     )
 
     private val SYSTEM = "Tumi Wakin-er personal AI assistant. " +
-        "Se Banglish ba Bangla-e likhle tumi-o shei vashay chhoto, shohoj uttor dao."
+        "Uttor chhoto ar shohoj rakho. Uttor jore pora hobe, tai star (*), markdown, emoji bebohar korbe na. " +
+        "User Bangla lipi-te (বাংলা) likhle ba bolle tumi-o Bangla lipi-te uttor dao. " +
+        "Banglish-e likhle Banglish-e dao. English-e likhle English-e dao."
 
     private lateinit var chatView: TextView
     private lateinit var scroll: ScrollView
     private lateinit var input: EditText
+    private lateinit var micBtn: Button
+    private lateinit var langBtn: Button
     private val history = JSONArray()
+
+    private var recognizer: SpeechRecognizer? = null
+    private var tts: TextToSpeech? = null
+    private var ttsReady = false
+    private var listening = false
+    private var speakReply = false
+    private var langTag = "bn-BD"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         buildUi()
+        tts = TextToSpeech(this) { status -> ttsReady = (status == TextToSpeech.SUCCESS) }
         if (getKey().isEmpty()) askKey()
     }
 
+    override fun onDestroy() {
+        recognizer?.destroy()
+        tts?.stop()
+        tts?.shutdown()
+        super.onDestroy()
+    }
+
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun langName() = if (langTag == "bn-BD") "Bangla" else "English"
 
     private fun buildUi() {
         val match = ViewGroup.LayoutParams.MATCH_PARENT
@@ -59,6 +88,14 @@ class MainActivity : Activity() {
             textSize = 22f
         }
         top.addView(title, LinearLayout.LayoutParams(0, wrap, 1f))
+        langBtn = Button(this).apply {
+            text = langName()
+            setOnClickListener {
+                langTag = if (langTag == "bn-BD") "en-US" else "bn-BD"
+                text = langName()
+            }
+        }
+        top.addView(langBtn)
         val keyBtn = Button(this).apply {
             text = "Key"
             setOnClickListener { askKey() }
@@ -84,9 +121,17 @@ class MainActivity : Activity() {
             maxLines = 4
         }
         bottom.addView(input, LinearLayout.LayoutParams(0, wrap, 1f))
+        micBtn = Button(this).apply {
+            text = "Mic"
+            setOnClickListener { onMic() }
+        }
+        bottom.addView(micBtn)
         val sendBtn = Button(this).apply {
             text = "Pathao"
-            setOnClickListener { sendMessage() }
+            setOnClickListener {
+                speakReply = false
+                sendMessage()
+            }
         }
         bottom.addView(sendBtn)
         root.addView(bottom)
@@ -118,6 +163,106 @@ class MainActivity : Activity() {
         scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
 
+    // ---------- Voice: shona ----------
+
+    private fun onMic() {
+        tts?.stop()
+        if (listening) {
+            recognizer?.stopListening()
+            return
+        }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
+            return
+        }
+        startListening()
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 1 && grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            startListening()
+        } else {
+            append("(Mic permission na dile shunte parbo na)\n\n")
+        }
+    }
+
+    private fun startListening() {
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            append("(Ei phone-e voice recognition nai. Google app update kore dekho)\n\n")
+            return
+        }
+        recognizer?.destroy()
+        val r = SpeechRecognizer.createSpeechRecognizer(this)
+        recognizer = r
+        r.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) {
+                micBtn.text = "Shunchi..."
+            }
+
+            override fun onBeginningOfSpeech() {}
+            override fun onRmsChanged(rmsdB: Float) {}
+            override fun onBufferReceived(buffer: ByteArray?) {}
+            override fun onEndOfSpeech() {
+                micBtn.text = "Mic"
+            }
+
+            override fun onError(error: Int) {
+                listening = false
+                micBtn.text = "Mic"
+                append("(Shunte parini, abar bolo. error $error)\n\n")
+            }
+
+            override fun onResults(results: Bundle?) {
+                listening = false
+                micBtn.text = "Mic"
+                val text = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                if (!text.isNullOrBlank()) {
+                    speakReply = true
+                    input.setText(text)
+                    sendMessage()
+                }
+            }
+
+            override fun onPartialResults(partialResults: Bundle?) {}
+            override fun onEvent(eventType: Int, params: Bundle?) {}
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+        }
+        listening = true
+        r.startListening(intent)
+    }
+
+    // ---------- Voice: bola ----------
+
+    private fun speak(text: String) {
+        val t = tts ?: return
+        if (!ttsReady) return
+        val res = t.setLanguage(Locale.forLanguageTag(langTag))
+        if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
+            append(
+                "(Ei phone-e ${langName()} voice nai. Settings > text-to-speech e " +
+                    "Google engine-e ${langName()} voice namao)\n\n"
+            )
+            return
+        }
+        t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "myai")
+    }
+
+    // ---------- AI ----------
+
     private fun message(role: String, text: String): JSONObject =
         JSONObject().put("role", role)
             .put("parts", JSONArray().put(JSONObject().put("text", text)))
@@ -130,6 +275,7 @@ class MainActivity : Activity() {
             askKey()
             return
         }
+        val shouldSpeak = speakReply
         input.setText("")
         append("Tumi: $text\n\n")
         history.put(message("user", text))
@@ -138,7 +284,10 @@ class MainActivity : Activity() {
             try {
                 val reply = callGemini(key)
                 history.put(message("model", reply))
-                runOnUiThread { append("AI: $reply\n\n") }
+                runOnUiThread {
+                    append("AI: $reply\n\n")
+                    if (shouldSpeak) speak(reply)
+                }
             } catch (e: Exception) {
                 history.remove(history.length() - 1)
                 runOnUiThread { append("Error: ${e.message}\n\n") }
