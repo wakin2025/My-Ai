@@ -27,6 +27,7 @@ import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 import kotlin.concurrent.thread
@@ -57,7 +58,9 @@ class MainActivity : Activity() {
             "Alarm ba WhatsApp-er kotha user nijer na tulle tumi nijer theke tulbe na, kono offer-o dibe na. " +
             "Kauke WhatsApp-e shomoy moto message pathate bolle schedule_whatsapp function bebohar koro: " +
             "message-er lekha tumi nijei likho (user-er bhashay, chhoto, shundor, emoji dewa jay). " +
-            "Contact-er naam Bangla-e bolle name_alt-e English banan, English-e bolle Bangla banan dao."
+            "Contact-er naam Bangla-e bolle name_alt-e English banan, English-e bolle Bangla banan dao. " +
+            "User 'X minute por' ba 'ekhon theke' bolle schedule_whatsapp-e shudhu in_minutes dao " +
+            "(hour/minute dio na). 'ratri 9 tay'-er moto spasto shomoy bolle hour ar minute dao."
     }
 
     private lateinit var chatView: TextView
@@ -632,8 +635,16 @@ class MainActivity : Activity() {
             runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2) }
             return Pair("Contacts-er permission dao, tarpor abar bolo.", "")
         }
-        val h = a.optInt("hour", -1)
-        val m = a.optInt("minute", 0)
+        var h = a.optInt("hour", -1)
+        var m = a.optInt("minute", 0)
+        // "X minute por" hole ekhon-er shomoy theke app nijei hishab kore (uttor ashte deri holeo thik thake)
+        val inMin = a.optInt("in_minutes", 0)
+        if (inMin > 0) {
+            val cal = Calendar.getInstance()
+            cal.add(Calendar.MINUTE, inMin)
+            h = cal.get(Calendar.HOUR_OF_DAY)
+            m = cal.get(Calendar.MINUTE)
+        }
         val msg = a.optString("message", "").trim()
         val name = a.optString("name", "").trim()
         if (h !in 0..23 || m !in 0..59 || msg.isEmpty() || name.isEmpty()) {
@@ -734,8 +745,9 @@ class MainActivity : Activity() {
                 "Kono contact-ke WhatsApp-e nirdishto shomoye message pathanor schedule kore",
                 JSONObject().put("name", nameP).put("name_alt", nameAlt)
                     .put("hour", hour).put("minute", minute)
+                    .put("in_minutes", minutes)
                     .put("message", msgP).put("reply", reply),
-                listOf("name", "hour", "minute", "message", "reply")
+                listOf("name", "message", "reply")
             )
         )
         decls.put(
