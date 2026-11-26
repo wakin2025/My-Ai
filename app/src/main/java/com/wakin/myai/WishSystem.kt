@@ -259,7 +259,7 @@ class WishReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val w = Wishes.take(context, intent.getIntExtra("id", -1)) ?: return
 
-        val pm = context.getSystemService(Context.POWER_MANAGER_SERVICE) as PowerManager
+        val pm = context.getSystemService(Context.POWER_SERVICE) as PowerManager
         @Suppress("DEPRECATION")
         val wl = pm.newWakeLock(
             PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
