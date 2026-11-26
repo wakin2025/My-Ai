@@ -80,6 +80,7 @@ class MainActivity : Activity() {
     private var voiceName = "Kore"
     private var track: AudioTrack? = null
     private var speakId = 0
+    @Volatile private var busy = false
     private lateinit var voiceBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -435,6 +436,15 @@ class MainActivity : Activity() {
         JSONObject().put("role", role)
             .put("parts", JSONArray().put(JSONObject().put("text", text)))
 
+    private fun removeFromHistory(msg: JSONObject) {
+        for (i in history.length() - 1 downTo 0) {
+            if (history.get(i) === msg) {
+                history.remove(i)
+                return
+            }
+        }
+    }
+
     private fun sendMessage() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
@@ -443,10 +453,16 @@ class MainActivity : Activity() {
             askKey()
             return
         }
+        if (busy) {
+            append("(Ager uttor ashche, ektu opekkha koro)\n\n")
+            return
+        }
+        busy = true
         val shouldSpeak = speakReply
         input.setText("")
         append("Tumi: $text\n\n")
-        history.put(message("user", text))
+        val userMsg = message("user", text)
+        history.put(userMsg)
 
         thread {
             try {
@@ -459,8 +475,10 @@ class MainActivity : Activity() {
                     if (shouldSpeak) speak(reply.text)
                 }
             } catch (e: Exception) {
-                history.remove(history.length() - 1)
+                removeFromHistory(userMsg)
                 runOnUiThread { append("Error: ${e.message}\n\n") }
+            } finally {
+                busy = false
             }
         }
     }
@@ -476,6 +494,13 @@ class MainActivity : Activity() {
                 if (code in 200..299) return parseReply(resp)
 
                 lastError = "HTTP $code ($model): " + resp.take(150)
+                if (code == -1) {
+                    if (attempt == 1) {
+                        Thread.sleep(1500)
+                        continue
+                    }
+                    throw Exception("Internet-er shomossha, abar try koro (" + resp.take(80) + ")")
+                }
                 if (code == 404) break
                 if (code !in listOf(429, 500, 503, 504)) throw Exception(lastError)
                 if (attempt == 1) Thread.sleep(2000)
@@ -484,14 +509,21 @@ class MainActivity : Activity() {
         throw Exception(lastError)
     }
 
-    private fun request(key: String, model: String): Pair<Int, String> {
+    private fun request(key: String, model: String): Pair<Int, String> =
+        try {
+            requestRaw(key, model)
+        } catch (e: java.io.IOException) {
+            Pair(-1, e.message ?: "internet shomossha")
+        }
+
+    private fun requestRaw(key: String, model: String): Pair<Int, String> {
         val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent")
         val conn = url.openConnection() as HttpURLConnection
         conn.requestMethod = "POST"
         conn.setRequestProperty("Content-Type", "application/json")
         conn.setRequestProperty("x-goog-api-key", key)
         conn.connectTimeout = 20000
-        conn.readTimeout = 60000
+        conn.readTimeout = 45000
         conn.doOutput = true
 
         val body = JSONObject()
@@ -607,8 +639,15 @@ class MainActivity : Activity() {
         if (h !in 0..23 || m !in 0..59 || msg.isEmpty() || name.isEmpty()) {
             return Pair("Naam, shomoy ba message bujhte parini, abar bolo.", "")
         }
-        val match = WaContacts.find(this, listOf(name, a.optString("name_alt", "")))
-            ?: return Pair("Contact-e $name khuje pai ni. Contact save kora ache to?", "")
+        val found = WaContacts.find(this, listOf(name, a.optString("name_alt", "")))
+        val match = found.match
+        if (match == null) {
+            return if (found.ambiguous.isNotEmpty()) {
+                Pair("Ekadhik contact mile geche: " + found.ambiguous.joinToString(", ") + ". Puro naam bolo.", "")
+            } else {
+                Pair("Contact-e $name khuje pai ni. Contact-e naam-ta kemon lekha ache?", "")
+            }
+        }
 
         val t = Wishes.add(this, h, m, match.name, match.number, msg)
         val notes = ArrayList<String>()
