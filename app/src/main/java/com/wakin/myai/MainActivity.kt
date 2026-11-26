@@ -9,6 +9,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioTrack
 import android.os.Bundle
+import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
@@ -39,7 +40,7 @@ class MainActivity : Activity() {
         "gemini-3.1-flash-lite"
     )
 
-    private val SYSTEM = "Tumi Wakin-er personal AI assistant. " +
+    private val SYSTEM = "Tumi Roza, Wakin-er personal AI assistant. Tomar naam Roza. " +
         "Uttor chhoto ar shohoj rakho. Uttor jore pora hobe, tai star (*), markdown, emoji bebohar korbe na. " +
         "User Bangla lipi-te (বাংলা) likhle ba bolle tumi-o Bangla lipi-te uttor dao. " +
         "Banglish-e likhle Banglish-e dao. English-e likhle English-e dao."
@@ -52,7 +53,11 @@ class MainActivity : Activity() {
             " Ekhon shomoy: $now (24-hour). " +
             "User alarm set korte, dekhte, bondho korte ba mushe dite chaile function call koro, " +
             "nijer theke bole dio na je kaj hoye geche. Shomoy shob shomoy 24-hour e dao " +
-            "(jemon ratri 9 tay = 21, bikel 4 tay = 16, shokal 7 tay = 7)."
+            "(jemon ratri 9 tay = 21, bikel 4 tay = 16, shokal 7 tay = 7). " +
+            "Alarm ba WhatsApp-er kotha user nijer na tulle tumi nijer theke tulbe na, kono offer-o dibe na. " +
+            "Kauke WhatsApp-e shomoy moto message pathate bolle schedule_whatsapp function bebohar koro: " +
+            "message-er lekha tumi nijei likho (user-er bhashay, chhoto, shundor, emoji dewa jay). " +
+            "Contact-er naam Bangla-e bolle name_alt-e English banan, English-e bolle Bangla banan dao."
     }
 
     private lateinit var chatView: TextView
@@ -215,6 +220,14 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 2) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                append("(Contacts permission peyechi, ekhon abar bolo)\n\n")
+            } else {
+                append("(Contacts permission na dile naam khuje pabo na)\n\n")
+            }
+            return
+        }
         if (requestCode == 1 && grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         ) {
@@ -565,8 +578,48 @@ class MainActivity : Activity() {
                 val n = Alarms.cancelAll(this)
                 Pair(reply, "$n ta alarm mushe geche")
             }
+            "schedule_whatsapp" -> scheduleWish(a, reply)
+            "list_wishes" -> Pair(reply, Wishes.describe(this))
+            "cancel_wishes" -> {
+                val n = Wishes.cancelAll(this)
+                Pair(reply, "$n ta wish mushe geche")
+            }
             else -> Pair(reply, "")
         }
+    }
+
+    private fun isAccessibilityOn(): Boolean {
+        val s = Settings.Secure.getString(
+            contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES
+        ) ?: return false
+        return s.contains("$packageName/") && s.contains("WaSendService")
+    }
+
+    private fun scheduleWish(a: JSONObject, reply: String): Pair<String, String> {
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+            runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2) }
+            return Pair("Contacts-er permission dao, tarpor abar bolo.", "")
+        }
+        val h = a.optInt("hour", -1)
+        val m = a.optInt("minute", 0)
+        val msg = a.optString("message", "").trim()
+        val name = a.optString("name", "").trim()
+        if (h !in 0..23 || m !in 0..59 || msg.isEmpty() || name.isEmpty()) {
+            return Pair("Naam, shomoy ba message bujhte parini, abar bolo.", "")
+        }
+        val match = WaContacts.find(this, listOf(name, a.optString("name_alt", "")))
+            ?: return Pair("Contact-e $name khuje pai ni. Contact save kora ache to?", "")
+
+        val t = Wishes.add(this, h, m, match.name, match.number, msg)
+        val notes = ArrayList<String>()
+        notes.add("WhatsApp: ${match.name} (+${match.number}), " + Alarms.format(t))
+        notes.add("Message: $msg")
+        if (!isAccessibilityOn()) {
+            runOnUiThread { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+            notes.add("Accessibility-te MyAI chalu koro, na hole Send chapbe na")
+            return Pair("$reply Tobe age accessibility chalu korte hobe.", notes.joinToString("\n"))
+        }
+        return Pair(reply, notes.joinToString("\n"))
     }
 
     private fun fn(name: String, desc: String, props: JSONObject, required: List<String>): JSONObject =
@@ -630,6 +683,34 @@ class MainActivity : Activity() {
                     JSONObject().put("reply", reply), listOf("reply")
                 )
             )
+        val nameP = JSONObject().put("type", "STRING")
+            .put("description", "Contact-er naam, user jevabe bolechhe")
+        val nameAlt = JSONObject().put("type", "STRING")
+            .put("description", "Oi naam-er onno lipi-te banan (Bangla hole English, English hole Bangla)")
+        val msgP = JSONObject().put("type", "STRING")
+            .put("description", "WhatsApp-e pathanor puro message, tumi likhbe")
+        decls.put(
+            fn(
+                "schedule_whatsapp",
+                "Kono contact-ke WhatsApp-e nirdishto shomoye message pathanor schedule kore",
+                JSONObject().put("name", nameP).put("name_alt", nameAlt)
+                    .put("hour", hour).put("minute", minute)
+                    .put("message", msgP).put("reply", reply),
+                listOf("name", "hour", "minute", "message", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "list_wishes", "Schedule kora WhatsApp message-er talika dekhay",
+                JSONObject().put("reply", reply), listOf("reply")
+            )
+        )
+        decls.put(
+            fn(
+                "cancel_wishes", "Schedule kora shob WhatsApp message mushe dey",
+                JSONObject().put("reply", reply), listOf("reply")
+            )
+        )
         return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 }
