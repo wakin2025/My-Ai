@@ -5,11 +5,15 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.os.Bundle
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
@@ -65,8 +69,17 @@ class MainActivity : Activity() {
     private var speakReply = false
     private var langTag = "bn-BD"
 
+    // Notun, sundor voice (Gemini TTS). Kaj na korle phone-er nijer voice-e fallback korbe
+    private val TTS_MODEL = "gemini-3.1-flash-tts-preview"
+    private val VOICES = listOf("Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
+    private var voiceName = "Kore"
+    private var track: AudioTrack? = null
+    private var speakId = 0
+    private lateinit var voiceBtn: Button
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Kore") ?: "Kore"
         buildUi()
         tts = TextToSpeech(this) { status -> ttsReady = (status == TextToSpeech.SUCCESS) }
         if (getKey().isEmpty()) askKey()
@@ -74,7 +87,7 @@ class MainActivity : Activity() {
 
     override fun onDestroy() {
         recognizer?.destroy()
-        tts?.stop()
+        stopSpeaking()
         tts?.shutdown()
         super.onDestroy()
     }
@@ -109,6 +122,11 @@ class MainActivity : Activity() {
             }
         }
         top.addView(langBtn)
+        voiceBtn = Button(this).apply {
+            text = voiceName
+            setOnClickListener { nextVoice() }
+        }
+        top.addView(voiceBtn)
         val keyBtn = Button(this).apply {
             text = "Key"
             setOnClickListener { askKey() }
@@ -179,7 +197,7 @@ class MainActivity : Activity() {
     // ---------- Voice: shona ----------
 
     private fun onMic() {
-        tts?.stop()
+        stopSpeaking()
         if (listening) {
             recognizer?.stopListening()
             return
@@ -260,7 +278,131 @@ class MainActivity : Activity() {
 
     // ---------- Voice: bola ----------
 
+    private fun nextVoice() {
+        val i = VOICES.indexOf(voiceName)
+        voiceName = VOICES[(i + 1) % VOICES.size]
+        voiceBtn.text = voiceName
+        getSharedPreferences("myai", MODE_PRIVATE).edit().putString("voice", voiceName).apply()
+        val sample = if (langTag == "bn-BD") {
+            "আমি তোমার ব্যক্তিগত এআই সহকারী। কেমন আছো?"
+        } else {
+            "Hi, I am your personal assistant. How are you today?"
+        }
+        speak(sample)
+    }
+
+    private fun stopSpeaking() {
+        speakId++
+        tts?.stop()
+        track?.let {
+            try {
+                it.stop()
+            } catch (e: Exception) {
+            }
+            it.release()
+        }
+        track = null
+    }
+
+    // Age Gemini-r sundor voice try kore, na hole phone-er voice
     private fun speak(text: String) {
+        stopSpeaking()
+        val myId = speakId
+        val key = getKey()
+        if (key.isEmpty()) {
+            speakSystem(text)
+            return
+        }
+        thread {
+            val pcm = try {
+                geminiSpeech(key, text)
+            } catch (e: Exception) {
+                null
+            }
+            runOnUiThread {
+                if (myId != speakId) return@runOnUiThread
+                if (pcm == null) speakSystem(text) else playPcm(pcm)
+            }
+        }
+    }
+
+    private fun geminiSpeech(key: String, text: String): ByteArray? {
+        val url = URL("https://generativelanguage.googleapis.com/v1beta/models/$TTS_MODEL:generateContent")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.requestMethod = "POST"
+        conn.setRequestProperty("Content-Type", "application/json")
+        conn.setRequestProperty("x-goog-api-key", key)
+        conn.connectTimeout = 15000
+        conn.readTimeout = 40000
+        conn.doOutput = true
+
+        val prompt = "Say in a warm, natural, friendly voice: $text"
+        val body = JSONObject()
+            .put(
+                "contents",
+                JSONArray().put(
+                    JSONObject().put("parts", JSONArray().put(JSONObject().put("text", prompt)))
+                )
+            )
+            .put(
+                "generationConfig",
+                JSONObject()
+                    .put("responseModalities", JSONArray().put("AUDIO"))
+                    .put(
+                        "speechConfig",
+                        JSONObject().put(
+                            "voiceConfig",
+                            JSONObject().put(
+                                "prebuiltVoiceConfig",
+                                JSONObject().put("voiceName", voiceName)
+                            )
+                        )
+                    )
+            )
+        conn.outputStream.use { it.write(body.toString().toByteArray()) }
+
+        val code = conn.responseCode
+        if (code !in 200..299) return null
+        val resp = conn.inputStream.bufferedReader().use { it.readText() }
+        val data = JSONObject(resp)
+            .optJSONArray("candidates")?.optJSONObject(0)
+            ?.optJSONObject("content")
+            ?.optJSONArray("parts")?.optJSONObject(0)
+            ?.optJSONObject("inlineData")
+            ?.optString("data")
+        if (data.isNullOrEmpty()) return null
+        return Base64.decode(data, Base64.DEFAULT)
+    }
+
+    // Gemini voice: 24000 Hz, mono, 16-bit PCM
+    private fun playPcm(pcm: ByteArray) {
+        val rate = 24000
+        val minBuf = AudioTrack.getMinBufferSize(
+            rate, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT
+        )
+        val t = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setBufferSizeInBytes(maxOf(minBuf, pcm.size))
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .build()
+        track = t
+        t.write(pcm, 0, pcm.size)
+        t.play()
+    }
+
+    private fun speakSystem(text: String) {
         val t = tts ?: return
         if (!ttsReady) return
         val res = t.setLanguage(Locale.forLanguageTag(langTag))
