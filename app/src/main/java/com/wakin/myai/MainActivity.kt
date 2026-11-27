@@ -3,6 +3,8 @@ package com.wakin.myai
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.KeyguardManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
@@ -19,6 +21,7 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
@@ -91,8 +94,9 @@ class MainActivity : Activity() {
     private var speakId = 0
     @Volatile private var busy = false
     private val handler = Handler(Looper.getMainLooper())
-    private var wakeMode = false
+    @Volatile private var wakeMode = false
     private lateinit var wakeBtn: Button
+    private lateinit var pinBtn: Button
     private lateinit var voiceBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -130,12 +134,49 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         wakeBtn.text = wakeLabel()
+        pinBtn.text = pinLabel()
         WakeService.instance?.pauseListening()
     }
 
     override fun onStop() {
         super.onStop()
         WakeService.instance?.resumeListening()
+    }
+
+    private fun pinLabel() = if (PinStore.has(this)) "PIN: SET" else "PIN: NO"
+
+    // Phone-er screen lock-er PIN, shudhu WhatsApp wish-er shomoy lock khulte
+    private fun askPin() {
+        val box = EditText(this).apply {
+            hint = "Screen lock-er PIN (shudhu number)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Lock PIN")
+            .setMessage(
+                "PIN phone-e encrypted thake. Ei app shudhu schedule kora WhatsApp wish " +
+                    "pathanor shomoy PIN diye lock khulbe, onno kono shomoy na."
+            )
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val p = box.text.toString().trim()
+                if (p.length in 4..16 && p.all { it.isDigit() }) {
+                    try {
+                        PinStore.save(this, p)
+                    } catch (e: Exception) {
+                        append("(PIN save hoyni: ${e.message})\n\n")
+                    }
+                    pinBtn.text = pinLabel()
+                } else {
+                    append("(PIN shudhu 4 theke 16 ta number hote hobe)\n\n")
+                }
+            }
+            .setNeutralButton("Mushe dao") { _, _ ->
+                PinStore.clear(this)
+                pinBtn.text = pinLabel()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun wakeLabel() = if (WakeService.instance != null) "Roza: ON" else "Roza: OFF"
@@ -256,7 +297,14 @@ class MainActivity : Activity() {
             text = wakeLabel()
             setOnClickListener { toggleWake() }
         }
-        root.addView(wakeBtn, LinearLayout.LayoutParams(wrap, wrap))
+        pinBtn = Button(this).apply {
+            text = pinLabel()
+            setOnClickListener { askPin() }
+        }
+        val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row2.addView(wakeBtn)
+        row2.addView(pinBtn)
+        root.addView(row2)
 
         scroll = ScrollView(this)
         chatView = TextView(this).apply {
@@ -761,6 +809,11 @@ class MainActivity : Activity() {
     }
 
     private fun scheduleWish(a: JSONObject, reply: String): Pair<String, String> {
+        // Lock thaka obosthay "Roza" bole kew WhatsApp schedule korte parbe na
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (wakeMode && km.isKeyguardLocked) {
+            return Pair("Phone lock thakle WhatsApp schedule kora jabe na. Age app khulo.", "")
+        }
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2) }
             return Pair("Contacts-er permission dao, tarpor abar bolo.", "")
