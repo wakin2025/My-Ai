@@ -262,7 +262,8 @@ class WakeService : Service() {
         const val NOTIF_ID = 7
 
         val WORDS = listOf("rosa", "roza", "rosie")
-        const val VOICE_THRESHOLD = 0.62f
+        // 50% match holei jagbe
+        const val VOICE_THRESHOLD = 0.50f
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -401,7 +402,10 @@ class WakeService : Service() {
                         return
                     }
                     val spk = SpeakerStore.extractSpk(hypothesis ?: "")
-                    if (spk == null) return
+                    if (spk == null) {
+                        updateNotification("Shobdo khub chhoto, ektu lombo kore 'Roza' bolo")
+                        return
+                    }
                     val score = SpeakerStore.similarity(saved, spk)
                     val pct = (score * 100).toInt()
                     if (score >= VOICE_THRESHOLD) {
