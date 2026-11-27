@@ -262,8 +262,8 @@ class WakeService : Service() {
         const val NOTIF_ID = 7
 
         val WORDS = listOf("rosa", "roza", "rosie")
-        // 50% match holei jagbe
-        const val VOICE_THRESHOLD = 0.50f
+        // 30% match holei jagbe
+        const val VOICE_THRESHOLD = 0.30f
     }
 
     private val handler = Handler(Looper.getMainLooper())
