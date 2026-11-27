@@ -11,6 +11,7 @@ import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.MediaPlayer
 import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
@@ -33,8 +34,10 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
@@ -49,16 +52,21 @@ class MainActivity : Activity() {
         "gemini-3.1-flash-lite"
     )
 
-    private val SYSTEM = "Tumi Roza, Wakin-er personal AI assistant. Tomar naam Roza. " +
-        "Uttor chhoto ar shohoj rakho. Uttor jore pora hobe, tai star (*), markdown, emoji bebohar korbe na. " +
-        "User Bangla lipi-te (বাংলা) likhle ba bolle tumi-o Bangla lipi-te uttor dao. " +
-        "Banglish-e likhle Banglish-e dao. English-e likhle English-e dao."
+    private val SYSTEM = "তুমি রোজা, ওয়াকিনের ব্যক্তিগত এআই সহকারী। তোমার নাম রোজা। " +
+        "উত্তর ছোট আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
+        "ইউজার বাংলায় কথা বললে বা বাংলা মোডে থাকলে সবসময় খাঁটি বাংলা অক্ষরে উত্তর দাও, কখনোই বাংলিশে লিখবে না। " +
+        "ইউজার ইংরেজিতে বললে ইংরেজিতে উত্তর দাও।"
 
     private class Reply(val text: String, val note: String)
 
     private fun systemText(): String {
         val now = SimpleDateFormat("EEEE, d MMMM yyyy, HH:mm", Locale.ENGLISH).format(Date())
-        return SYSTEM +
+        val langRule = if (langTag == "bn-BD") {
+            " Ekhon Bangla mode chalu ache, tai obosshoi shudhu Bangla okkhore (বাংলা) uttor dao."
+        } else {
+            " Reply in English."
+        }
+        return SYSTEM + langRule +
             " Ekhon shomoy: $now (24-hour). " +
             "User alarm set korte, dekhte, bondho korte ba mushe dite chaile function call koro, " +
             "nijer theke bole dio na je kaj hoye geche. Shomoy shob shomoy 24-hour e dao " +
@@ -89,6 +97,7 @@ class MainActivity : Activity() {
     private val VOICES = listOf("Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
     private var voiceName = "Kore"
     private var track: AudioTrack? = null
+    private var mp: MediaPlayer? = null
     private var speakId = 0
     @Volatile private var busy = false
     private val handler = Handler(Looper.getMainLooper())
@@ -182,7 +191,7 @@ class MainActivity : Activity() {
         VoiceEnroller.enroll(
             this,
             onStatus = { msg -> runOnUiThread { append("($msg)\n") } },
-            onDone = { ok, msg ->
+            onDone = { _, msg ->
                 runOnUiThread {
                     myVoiceBtn.isEnabled = true
                     myVoiceBtn.text = myVoiceLabel()
@@ -542,33 +551,82 @@ class MainActivity : Activity() {
         speakId++
         tts?.stop()
         track?.let {
-            try {
-                it.stop()
-            } catch (e: Exception) {
-            }
+            try { it.stop() } catch (e: Exception) {}
             it.release()
         }
         track = null
+        mp?.let {
+            try { it.stop() } catch (e: Exception) {}
+            it.release()
+        }
+        mp = null
     }
 
+    // 1) Gemini voice try kore, 2) na hole online Bangla voice, 3) na hole phone-er voice
     private fun speak(text: String) {
         stopSpeaking()
         val myId = speakId
         val key = getKey()
-        if (key.isEmpty()) {
-            speakSystem(text)
-            return
-        }
         thread {
-            val pcm = try {
-                geminiSpeech(key, text)
-            } catch (e: Exception) {
+            val pcm = if (key.isNotEmpty()) {
+                try { geminiSpeech(key, text) } catch (e: Exception) { null }
+            } else {
                 null
             }
+            if (pcm != null) {
+                runOnUiThread {
+                    if (myId == speakId) playPcm(pcm)
+                }
+                return@thread
+            }
+
+            val mp3 = try { googleOnlineTts(text) } catch (e: Exception) { null }
             runOnUiThread {
                 if (myId != speakId) return@runOnUiThread
-                if (pcm == null) speakSystem(text) else playPcm(pcm)
+                if (mp3 != null) playMp3(mp3) else speakSystem(text)
             }
+        }
+    }
+
+    private fun googleOnlineTts(text: String): File? {
+        val hasBangla = text.any { it in '\u0980'..'\u09FF' }
+        val tl = if (hasBangla || langTag == "bn-BD") "bn" else "en"
+        val clean = text.replace("\n", " ").trim().take(190)
+        if (clean.isEmpty()) return null
+        val q = URLEncoder.encode(clean, "UTF-8")
+        val url = URL("https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$q")
+        val conn = url.openConnection() as HttpURLConnection
+        conn.setRequestProperty("User-Agent", "Mozilla/5.0")
+        conn.connectTimeout = 10000
+        conn.readTimeout = 15000
+        if (conn.responseCode !in 200..299) return null
+        val f = File(cacheDir, "tts.mp3")
+        conn.inputStream.use { inp -> f.outputStream().use { out -> inp.copyTo(out) } }
+        return if (f.length() > 100) f else null
+    }
+
+    private fun playMp3(file: File) {
+        try {
+            val player = MediaPlayer()
+            player.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            player.setDataSource(file.absolutePath)
+            player.setOnCompletionListener {
+                if (wakeMode) handler.postDelayed({ finishWake() }, 600)
+            }
+            player.setOnErrorListener { _, _, _ ->
+                if (wakeMode) handler.postDelayed({ finishWake() }, 600)
+                true
+            }
+            player.prepare()
+            mp = player
+            player.start()
+        } catch (e: Exception) {
+            speakSystem("")
         }
     }
 
@@ -652,7 +710,7 @@ class MainActivity : Activity() {
 
     private fun speakSystem(text: String) {
         val t = tts ?: return
-        if (!ttsReady) return
+        if (!ttsReady || text.isEmpty()) return
         val res = t.setLanguage(Locale.forLanguageTag(langTag))
         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
             append(
@@ -805,14 +863,14 @@ class MainActivity : Activity() {
 
     private fun runAction(name: String, args: JSONObject?): Pair<String, String> {
         val a = args ?: JSONObject()
-        val reply = a.optString("reply", "Thik ache.")
+        val reply = a.optString("reply", "ঠিক আছে।")
         val label = a.optString("label", "Alarm").ifBlank { "Alarm" }
         return when (name) {
             "set_alarm" -> {
                 val h = a.optInt("hour", -1)
                 val m = a.optInt("minute", 0)
                 if (h !in 0..23 || m !in 0..59) {
-                    Pair("Shomoy bujhte parini, abar bolo.", "")
+                    Pair("সময় বুঝতে পারিনি, আবার বলো।", "")
                 } else {
                     val t = Alarms.setAt(this, h, m, label)
                     Pair(reply, "Alarm: " + Alarms.format(t))
@@ -821,7 +879,7 @@ class MainActivity : Activity() {
             "set_alarm_in" -> {
                 val min = a.optInt("minutes", -1)
                 if (min < 1) {
-                    Pair("Koto minute por, bujhte parini.", "")
+                    Pair("কত মিনিট পর, বুঝতে পারিনি।", "")
                 } else {
                     val t = Alarms.setIn(this, min, label)
                     Pair(reply, "Alarm: " + Alarms.format(t))
@@ -837,7 +895,7 @@ class MainActivity : Activity() {
                     if (t != null) {
                         Pair(reply, "Porer alarm mushe geche: " + Alarms.format(t))
                     } else {
-                        Pair("Kono alarm bajchhe na, ar set kora alarm-o nai.", "")
+                        Pair("কোনো অ্যালার্ম বাজছে না, আর সেট করা অ্যালার্মও নেই।", "")
                     }
                 }
             }
@@ -865,11 +923,11 @@ class MainActivity : Activity() {
     private fun scheduleWish(a: JSONObject, reply: String): Pair<String, String> {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (wakeMode && km.isKeyguardLocked) {
-            return Pair("Phone lock thakle WhatsApp schedule kora jabe na. Age app khulo.", "")
+            return Pair("ফোন লক থাকলে হোয়াটসঅ্যাপ শিডিউল করা যাবে না। আগে অ্যাপ খোলো।", "")
         }
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
             runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2) }
-            return Pair("Contacts-er permission dao, tarpor abar bolo.", "")
+            return Pair("কন্টাক্টস পারমিশন দাও, তারপর আবার বলো।", "")
         }
         var h = a.optInt("hour", -1)
         var m = a.optInt("minute", 0)
@@ -883,15 +941,15 @@ class MainActivity : Activity() {
         val msg = a.optString("message", "").trim()
         val name = a.optString("name", "").trim()
         if (h !in 0..23 || m !in 0..59 || msg.isEmpty() || name.isEmpty()) {
-            return Pair("Naam, shomoy ba message bujhte parini, abar bolo.", "")
+            return Pair("নাম, সময় বা মেসেজ বুঝতে পারিনি, আবার বলো।", "")
         }
         val found = WaContacts.find(this, listOf(name, a.optString("name_alt", "")))
         val match = found.match
         if (match == null) {
             return if (found.ambiguous.isNotEmpty()) {
-                Pair("Ekadhik contact mile geche: " + found.ambiguous.joinToString(", ") + ". Puro naam bolo.", "")
+                Pair("একাধিক কন্টাক্ট মিলে গেছে: " + found.ambiguous.joinToString(", ") + "। পুরো নাম বলো।", "")
             } else {
-                Pair("Contact-e $name khuje pai ni. Contact-e naam-ta kemon lekha ache?", "")
+                Pair("কন্টাক্টে $name খুঁজে পাইনি। নামটা কীভাবে লেখা আছে?", "")
             }
         }
 
@@ -902,7 +960,7 @@ class MainActivity : Activity() {
         if (!isAccessibilityOn()) {
             runOnUiThread { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
             notes.add("Accessibility-te MyAI chalu koro, na hole Send chapbe na")
-            return Pair("$reply Tobe age accessibility chalu korte hobe.", notes.joinToString("\n"))
+            return Pair("$reply তবে আগে অ্যাক্সেসিবিলিটি চালু করতে হবে।", notes.joinToString("\n"))
         }
         return Pair(reply, notes.joinToString("\n"))
     }
@@ -922,7 +980,7 @@ class MainActivity : Activity() {
     private fun tools(): JSONArray {
         val reply = JSONObject().put("type", "STRING").put(
             "description",
-            "User-er bhashay (Bangla lipi / Banglish / English) ek-duo line-er confirmation. " +
+            "User-er bhashay (Bangla mode-e khanti Bangla okkhore) ek-duo line-er confirmation. " +
                 "Jore pora hobe, tai emoji ba star dio na."
         )
         val label = JSONObject().put("type", "STRING")
