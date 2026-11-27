@@ -205,7 +205,7 @@ object VoiceEnroller {
                 audio.startRecording()
                 val buf = ShortArray(2048)
                 var total = 0
-                val targetSamples = 16000 * 4 // 4 second
+                val targetSamples = 16000 * 4
                 while (total < targetSamples) {
                     val n = audio.read(buf, 0, buf.size)
                     if (n > 0) {
@@ -249,7 +249,8 @@ class WakeService : Service() {
         const val NOTIF_ID = 7
 
         val WORDS = listOf("rosa", "roza", "rosie")
-        const val VOICE_THRESHOLD = 0.42f
+        // 62% match na hole jagbe na (age 42% chilo)
+        const val VOICE_THRESHOLD = 0.62f
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -386,10 +387,11 @@ class WakeService : Service() {
                     val spk = SpeakerStore.extractSpk(hypothesis ?: "")
                     if (spk == null) return
                     val score = SpeakerStore.similarity(saved, spk)
+                    val pct = (score * 100).toInt()
                     if (score >= VOICE_THRESHOLD) {
+                        updateNotification("Tomar voice ($pct%) - jagchi")
                         triggerWake()
                     } else {
-                        val pct = (score * 100).toInt()
                         updateNotification("Onno voice ($pct%) - jagini")
                     }
                 }
