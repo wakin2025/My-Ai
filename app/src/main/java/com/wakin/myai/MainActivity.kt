@@ -46,7 +46,6 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
-    // Shobcheye fast model-ta prothome rakha hoyeche
     private val MODELS = listOf(
         "gemini-3.5-flash-lite",
         "gemini-3.8-flash",
@@ -95,7 +94,6 @@ class MainActivity : Activity() {
     private var langTag = "bn-BD"
 
     private val TTS_MODEL = "gemini-3.1-flash-tts-preview"
-    // "Fast" = shathe shathe Bangla voice; baki gulo Gemini-r sundor voice (ektu slow)
     private val VOICES = listOf("Fast", "Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
     private var voiceName = "Fast"
     private var track: AudioTrack? = null
@@ -155,7 +153,7 @@ class MainActivity : Activity() {
 
     private fun pinLabel() = if (PinStore.has(this)) "PIN: SET" else "PIN: NO"
 
-    private fun myVoiceLabel() = if (SpeakerStore.has(this)) "MyVoice: ON" else "MyVoice: OFF"
+    private fun myVoiceLabel() = if (SpeakerStore.isEnabled(this)) "MyVoice: ON" else "MyVoice: OFF"
 
     private fun onMyVoice() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -163,15 +161,21 @@ class MainActivity : Activity() {
             return
         }
         if (SpeakerStore.has(this)) {
+            val isOn = SpeakerStore.isEnabled(this)
+            val msg = if (isOn) {
+                "Tomar voice save kora ache ar ekhon ON ache (shudhu tomar voice-ei Roza jagbe)."
+            } else {
+                "Tomar voice save kora ache, kintu ekhon OFF ache (je keu Roza bollei jagbe)."
+            }
             AlertDialog.Builder(this)
                 .setTitle("My Voice")
-                .setMessage("Tomar voice save kora ache. Ekhon shudhu tomar voice-ei Roza jagbe.")
-                .setPositiveButton("Notun Record") { _, _ -> startVoiceEnroll() }
-                .setNeutralButton("Mushe dao") { _, _ ->
-                    SpeakerStore.clear(this)
+                .setMessage(msg)
+                .setPositiveButton(if (isOn) "OFF koro" else "ON koro") { _, _ ->
+                    SpeakerStore.setEnabled(this, !isOn)
                     myVoiceBtn.text = myVoiceLabel()
-                    append("(Voice lock mushe dewa hoyeche)\n\n")
+                    append(if (!isOn) "(MyVoice ON kora hoyeche)\n\n" else "(MyVoice OFF kora hoyeche)\n\n")
                 }
+                .setNeutralButton("Abar Record") { _, _ -> startVoiceEnroll() }
                 .setNegativeButton("Cancel", null)
                 .show()
         } else {
@@ -565,7 +569,6 @@ class MainActivity : Activity() {
         mp = null
     }
 
-    // "Fast" hole shorashori fast online Bangla voice; na hole Gemini voice try kore
     private fun speak(text: String) {
         stopSpeaking()
         val myId = speakId
