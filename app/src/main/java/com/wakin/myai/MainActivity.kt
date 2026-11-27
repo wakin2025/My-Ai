@@ -7,16 +7,22 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioAttributes
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioTrack
+import android.media.ToneGenerator
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
+import android.speech.tts.UtteranceProgressListener
 import android.util.Base64
 import android.view.Gravity
 import android.view.ViewGroup
+import android.view.WindowManager
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -84,14 +90,118 @@ class MainActivity : Activity() {
     private var track: AudioTrack? = null
     private var speakId = 0
     @Volatile private var busy = false
+    private val handler = Handler(Looper.getMainLooper())
+    private var wakeMode = false
+    private lateinit var wakeBtn: Button
     private lateinit var voiceBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Kore") ?: "Kore"
         buildUi()
-        tts = TextToSpeech(this) { status -> ttsReady = (status == TextToSpeech.SUCCESS) }
+        tts = TextToSpeech(this) { status ->
+            ttsReady = (status == TextToSpeech.SUCCESS)
+            if (ttsReady) {
+                tts?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {}
+
+                    override fun onDone(utteranceId: String?) {
+                        runOnUiThread { if (wakeMode) handler.postDelayed({ finishWake() }, 600) }
+                    }
+
+                    override fun onError(utteranceId: String?) {
+                        runOnUiThread { if (wakeMode) handler.postDelayed({ finishWake() }, 600) }
+                    }
+                })
+            }
+        }
         if (getKey().isEmpty()) askKey()
+        handleWakeIntent(intent)
+    }
+
+    // ---------- "Roza" bole dak ----------
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleWakeIntent(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        wakeBtn.text = wakeLabel()
+        WakeService.instance?.pauseListening()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        WakeService.instance?.resumeListening()
+    }
+
+    private fun wakeLabel() = if (WakeService.instance != null) "Roza: ON" else "Roza: OFF"
+
+    private fun toggleWake() {
+        val prefs = getSharedPreferences("myai", MODE_PRIVATE)
+        if (WakeService.instance != null) {
+            stopService(Intent(this, WakeService::class.java))
+            prefs.edit().putBoolean("wake_on", false).apply()
+        } else {
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 3)
+                return
+            }
+            startForegroundService(Intent(this, WakeService::class.java))
+            prefs.edit().putBoolean("wake_on", true).apply()
+        }
+        handler.postDelayed({ wakeBtn.text = wakeLabel() }, 700)
+    }
+
+    // WakeService "Roza" shunle eta ke khole dey
+    private fun handleWakeIntent(i: Intent?) {
+        if (i == null || !i.getBooleanExtra("wake", false)) return
+        i.removeExtra("wake")
+        wakeMode = true
+        window.addFlags(
+            WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
+        )
+        handler.removeCallbacksAndMessages(null)
+        handler.postDelayed({ finishWake() }, 90_000)
+        handler.postDelayed({
+            try {
+                ToneGenerator(AudioManager.STREAM_MUSIC, 80).startTone(ToneGenerator.TONE_PROP_ACK, 150)
+            } catch (e: Exception) {
+            }
+        }, 200)
+        handler.postDelayed({
+            speakReply = true
+            stopSpeaking()
+            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) {
+                startListening()
+            } else {
+                finishWake()
+            }
+        }, 700)
+    }
+
+    // Kaj shesh, app-ke abar pichone pathay ar "Roza" shunte dey
+    private fun finishWake() {
+        if (!wakeMode) return
+        wakeMode = false
+        handler.removeCallbacksAndMessages(null)
+        try {
+            recognizer?.cancel()
+        } catch (e: Exception) {
+        }
+        listening = false
+        micBtn.text = "Mic"
+        window.clearFlags(
+            WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+        )
+        moveTaskToBack(true)
     }
 
     override fun onDestroy() {
@@ -142,6 +252,11 @@ class MainActivity : Activity() {
         }
         top.addView(keyBtn)
         root.addView(top)
+        wakeBtn = Button(this).apply {
+            text = wakeLabel()
+            setOnClickListener { toggleWake() }
+        }
+        root.addView(wakeBtn, LinearLayout.LayoutParams(wrap, wrap))
 
         scroll = ScrollView(this)
         chatView = TextView(this).apply {
@@ -224,6 +339,14 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 3) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                toggleWake()
+            } else {
+                append("(Mic permission na dile Roza shunte parbe na)\n\n")
+            }
+            return
+        }
         if (requestCode == 2) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 append("(Contacts permission peyechi, ekhon abar bolo)\n\n")
@@ -265,6 +388,7 @@ class MainActivity : Activity() {
                 listening = false
                 micBtn.text = "Mic"
                 append("(Shunte parini, abar bolo. error $error)\n\n")
+                if (wakeMode) handler.postDelayed({ finishWake() }, 1500)
             }
 
             override fun onResults(results: Bundle?) {
@@ -417,6 +541,9 @@ class MainActivity : Activity() {
         track = t
         t.write(pcm, 0, pcm.size)
         t.play()
+        if (wakeMode) {
+            handler.postDelayed({ finishWake() }, pcm.size / 48L + 1200L)
+        }
     }
 
     private fun speakSystem(text: String) {
@@ -479,7 +606,10 @@ class MainActivity : Activity() {
                 }
             } catch (e: Exception) {
                 removeFromHistory(userMsg)
-                runOnUiThread { append("Error: ${e.message}\n\n") }
+                runOnUiThread {
+                    append("Error: ${e.message}\n\n")
+                    if (wakeMode) handler.postDelayed({ finishWake() }, 4000)
+                }
             } finally {
                 busy = false
             }
