@@ -262,8 +262,8 @@ class WakeService : Service() {
         const val NOTIF_ID = 7
 
         val WORDS = listOf("rosa", "roza", "rosie")
-        // 30% match holei jagbe
-        const val VOICE_THRESHOLD = 0.30f
+        // 10% match holei jagbe
+        const val VOICE_THRESHOLD = 0.10f
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -271,6 +271,7 @@ class WakeService : Service() {
     private var spkModel: SpeakerModel? = null
     private var recognizer: Recognizer? = null
     private var speech: SpeechService? = null
+    private var listenLock: PowerManager.WakeLock? = null
 
     @Volatile
     private var alive = true
@@ -305,6 +306,26 @@ class WakeService : Service() {
             thread { prepareModel() }
         }
         return START_STICKY
+    }
+
+    private fun acquireListenLock() {
+        if (listenLock?.isHeld == true) return
+        try {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            listenLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "myai:listen").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+        } catch (e: Exception) {
+        }
+    }
+
+    private fun releaseListenLock() {
+        try {
+            if (listenLock?.isHeld == true) listenLock?.release()
+        } catch (e: Exception) {
+        }
+        listenLock = null
     }
 
     private fun buildNotification(text: String): Notification {
@@ -371,11 +392,20 @@ class WakeService : Service() {
         }
     }
 
+    private fun restartListening() {
+        if (!alive || !ready || paused) return
+        try { speech?.stop() } catch (e: Exception) {}
+        try { speech?.shutdown() } catch (e: Exception) {}
+        speech = null
+        startListening()
+    }
+
     private fun startListening() {
         if (!alive || !ready || paused) return
         if (speech != null) return
         val r = recognizer ?: return
         try {
+            acquireListenLock()
             val s = SpeechService(r, 16000.0f)
             speech = s
             val status = if (SpeakerStore.isEnabled(this)) {
@@ -417,11 +447,18 @@ class WakeService : Service() {
                 }
 
                 override fun onFinalResult(hypothesis: String?) {}
-                override fun onError(exception: Exception?) {}
-                override fun onTimeout() {}
+
+                override fun onError(exception: Exception?) {
+                    handler.postDelayed({ restartListening() }, 2000)
+                }
+
+                override fun onTimeout() {
+                    handler.postDelayed({ restartListening() }, 1000)
+                }
             })
         } catch (e: Exception) {
             updateNotification("Mic shomossha: " + (e.message ?: "").take(60))
+            handler.postDelayed({ restartListening() }, 3000)
         }
     }
 
@@ -463,6 +500,7 @@ class WakeService : Service() {
         try { speech?.stop() } catch (e: Exception) {}
         try { speech?.shutdown() } catch (e: Exception) {}
         speech = null
+        releaseListenLock()
     }
 
     fun resumeListening() {
