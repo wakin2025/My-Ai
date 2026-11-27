@@ -9,13 +9,14 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.provider.ContactsContract
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
-import android.provider.ContactsContract
 import android.telephony.TelephonyManager
 import android.util.Base64
 import android.view.Gravity
@@ -25,10 +26,10 @@ import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.KeyStore
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
-import java.security.KeyStore
 import java.util.Locale
 import javax.crypto.Cipher
 import javax.crypto.KeyGenerator
@@ -48,9 +49,13 @@ object WishState {
     @Volatile
     var name = ""
 
-    fun arm(n: String) {
+    @Volatile
+    var lockAfter = false
+
+    fun arm(n: String, shouldLock: Boolean) {
         name = n
         sent = false
+        lockAfter = shouldLock
         pendingUntil = System.currentTimeMillis() + 70_000L
     }
 
@@ -58,12 +63,10 @@ object WishState {
 
     fun clear() {
         pendingUntil = 0L
+        lockAfter = false
     }
 }
 
-// ---------------------------------------------------------------
-// Schedule kora wish-er talika
-// ---------------------------------------------------------------
 // ---------------------------------------------------------------
 // Lock-er PIN phone-er Keystore diye encrypt kore rakhe
 // ---------------------------------------------------------------
@@ -145,6 +148,9 @@ object PinTyper {
     }
 }
 
+// ---------------------------------------------------------------
+// Schedule kora wish-er talika
+// ---------------------------------------------------------------
 object Wishes {
     private const val PREFS = "myai_wishes"
     private const val KEY = "list"
@@ -431,6 +437,8 @@ class WishBootReceiver : BroadcastReceiver() {
 class WishActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
+    private var unlocked = false
+    private var wasLocked = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -455,16 +463,16 @@ class WishActivity : Activity() {
         }
     }
 
-    private var unlocked = false
-
     // Lock thakle PIN diye khole, tarpor WhatsApp-e pathay
     private fun unlockThenSend(name: String, number: String, message: String) {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (!km.isKeyguardLocked) {
+            wasLocked = false
             unlocked = true
             launchWhatsApp(name, number, message)
             return
         }
+        wasLocked = true
         if (km.isKeyguardSecure && PinStore.has(this)) PinTyper.arm()
         try {
             km.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
@@ -501,7 +509,7 @@ class WishActivity : Activity() {
     }
 
     private fun launchWhatsApp(name: String, number: String, message: String) {
-        WishState.arm(name)
+        WishState.arm(name, wasLocked)
         val uri = Uri.parse("https://wa.me/$number?text=" + Uri.encode(message))
         var ok = false
         for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b")) {
@@ -554,9 +562,16 @@ class WaSendService : AccessibilityService() {
 
         val btn = findSend(root) ?: return
         if (btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            val shouldLock = WishState.lockAfter
             WishState.sent = true
+            WishState.lockAfter = false
             Wishes.setLog(this, "${Wishes.now()} ${WishState.name}: Send chapa holo")
-            handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_HOME) }, 2500)
+            handler.postDelayed({
+                performGlobalAction(GLOBAL_ACTION_HOME)
+                if (shouldLock && Build.VERSION.SDK_INT >= 28) {
+                    handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN) }, 800)
+                }
+            }, 2500)
         }
     }
 
