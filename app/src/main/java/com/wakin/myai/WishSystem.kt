@@ -13,8 +13,11 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
 import android.provider.ContactsContract
 import android.telephony.TelephonyManager
+import android.util.Base64
 import android.view.Gravity
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
@@ -25,7 +28,12 @@ import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
+import java.security.KeyStore
 import java.util.Locale
+import javax.crypto.Cipher
+import javax.crypto.KeyGenerator
+import javax.crypto.SecretKey
+import javax.crypto.spec.GCMParameterSpec
 
 // ---------------------------------------------------------------
 // Ekhon kon wish pathano cholche, sheta service-ke janay
@@ -56,6 +64,87 @@ object WishState {
 // ---------------------------------------------------------------
 // Schedule kora wish-er talika
 // ---------------------------------------------------------------
+// ---------------------------------------------------------------
+// Lock-er PIN phone-er Keystore diye encrypt kore rakhe
+// ---------------------------------------------------------------
+object PinStore {
+    private const val PREFS = "myai_pin"
+    private const val KEY = "blob"
+    private const val ALIAS = "myai_pin_key"
+
+    private fun secretKey(): SecretKey {
+        val ks = KeyStore.getInstance("AndroidKeyStore")
+        ks.load(null)
+        val existing = ks.getKey(ALIAS, null)
+        if (existing is SecretKey) return existing
+        val kg = KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, "AndroidKeyStore")
+        kg.init(
+            KeyGenParameterSpec.Builder(
+                ALIAS, KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .build()
+        )
+        return kg.generateKey()
+    }
+
+    fun has(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY)
+
+    fun save(ctx: Context, pin: String) {
+        val c = Cipher.getInstance("AES/GCM/NoPadding")
+        c.init(Cipher.ENCRYPT_MODE, secretKey())
+        val enc = c.doFinal(pin.toByteArray())
+        val blob = Base64.encodeToString(c.iv + enc, Base64.NO_WRAP)
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, blob).apply()
+    }
+
+    fun get(ctx: Context): String? {
+        val blob = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
+            ?: return null
+        return try {
+            val all = Base64.decode(blob, Base64.NO_WRAP)
+            val iv = all.copyOfRange(0, 12)
+            val data = all.copyOfRange(12, all.size)
+            val c = Cipher.getInstance("AES/GCM/NoPadding")
+            c.init(Cipher.DECRYPT_MODE, secretKey(), GCMParameterSpec(128, iv))
+            String(c.doFinal(data))
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun clear(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
+    }
+}
+
+// Shudhu wish pathanor shomoy, kichukkhon-er jonno PIN chapar onumoti dey
+object PinTyper {
+    @Volatile
+    var armedUntil = 0L
+
+    @Volatile
+    var typing = false
+
+    @Volatile
+    var seen = ""
+
+    fun arm() {
+        armedUntil = System.currentTimeMillis() + 40_000L
+        typing = false
+        seen = ""
+    }
+
+    fun isArmed() = System.currentTimeMillis() < armedUntil
+
+    fun disarm() {
+        armedUntil = 0L
+        typing = false
+    }
+}
+
 object Wishes {
     private const val PREFS = "myai_wishes"
     private const val KEY = "list"
@@ -361,15 +450,54 @@ class WishActivity : Activity() {
             gravity = Gravity.CENTER
         })
 
-        try {
-            (getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager)
-                .requestDismissKeyguard(this, null)
-        } catch (e: Exception) {
-        }
-
         if (savedInstanceState == null) {
-            handler.postDelayed({ launchWhatsApp(name, number, message) }, 1500)
+            handler.postDelayed({ unlockThenSend(name, number, message) }, 1200)
         }
+    }
+
+    private var unlocked = false
+
+    // Lock thakle PIN diye khole, tarpor WhatsApp-e pathay
+    private fun unlockThenSend(name: String, number: String, message: String) {
+        val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
+        if (!km.isKeyguardLocked) {
+            unlocked = true
+            launchWhatsApp(name, number, message)
+            return
+        }
+        if (km.isKeyguardSecure && PinStore.has(this)) PinTyper.arm()
+        try {
+            km.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    unlocked = true
+                    PinTyper.disarm()
+                    handler.postDelayed({ launchWhatsApp(name, number, message) }, 800)
+                }
+
+                override fun onDismissError() {
+                    failWish(name, "lock khola jayni (error)")
+                }
+
+                override fun onDismissCancelled() {
+                    failWish(name, "lock khola cancel hoyeche")
+                }
+            })
+        } catch (e: Exception) {
+            failWish(name, "lock khola jayni")
+            return
+        }
+        handler.postDelayed({
+            if (!unlocked) {
+                failWish(name, "PIN dewa jayni. Dekhechi: " + PinTyper.seen.take(150))
+            }
+        }, 40_000)
+    }
+
+    private fun failWish(name: String, why: String) {
+        if (unlocked) return
+        PinTyper.disarm()
+        Wishes.setLog(this, "${Wishes.now()} $name: $why")
+        finish()
     }
 
     private fun launchWhatsApp(name: String, number: String, message: String) {
@@ -416,6 +544,9 @@ class WaSendService : AccessibilityService() {
     override fun onInterrupt() {}
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (PinTyper.isArmed() && !PinTyper.typing) {
+            tryTypePin()
+        }
         if (!WishState.isPending()) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: ""
@@ -427,6 +558,78 @@ class WaSendService : AccessibilityService() {
             Wishes.setLog(this, "${Wishes.now()} ${WishState.name}: Send chapa holo")
             handler.postDelayed({ performGlobalAction(GLOBAL_ACTION_HOME) }, 2500)
         }
+    }
+
+    // ---------- lock screen-er PIN pad-e number chapa ----------
+
+    private fun tryTypePin() {
+        val pin = PinStore.get(this) ?: return
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString() ?: ""
+        if (pkg.startsWith("com.whatsapp") || pkg == packageName) return
+
+        for (d in pin.toSet()) {
+            if (findKey(root, d, 0) == null) {
+                PinTyper.seen = describe(root)
+                return
+            }
+        }
+        PinTyper.typing = true
+        for ((i, d) in pin.withIndex()) {
+            handler.postDelayed({
+                val r = rootInActiveWindow
+                val k = if (r != null) findKey(r, d, 0) else null
+                k?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            }, 400L * (i + 1))
+        }
+        handler.postDelayed({
+            val r = rootInActiveWindow
+            val ok = if (r != null) findEnter(r, 0) else null
+            ok?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            handler.postDelayed({ PinTyper.disarm() }, 3000)
+        }, 400L * (pin.length + 1) + 200)
+    }
+
+    private fun findKey(n: AccessibilityNodeInfo?, d: Char, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val label = (n.text?.toString() ?: n.contentDescription?.toString() ?: "").trim()
+        if (label.isNotEmpty() && label.length <= 6) {
+            val first = label.split(" ", "\n").firstOrNull() ?: ""
+            if (first == d.toString()) {
+                val c = clickable(n)
+                if (c != null) return c
+            }
+        }
+        for (i in 0 until n.childCount) {
+            val r = findKey(n.getChild(i), d, depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findEnter(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val label = (n.contentDescription?.toString() ?: n.text?.toString() ?: "")
+            .trim().lowercase(Locale.ROOT)
+        if ((label == "enter" || label == "ok" || label == "done") && n.isClickable) return n
+        for (i in 0 until n.childCount) {
+            val r = findEnter(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    // PIN pad na pele ki ki dekhechi, sheta likhe rakhi (shomossha dhorar jonno)
+    private fun describe(root: AccessibilityNodeInfo): String {
+        val out = ArrayList<String>()
+        fun walk(n: AccessibilityNodeInfo?, depth: Int) {
+            if (n == null || depth > 12 || out.size >= 14) return
+            val l = (n.text?.toString() ?: n.contentDescription?.toString() ?: "").trim()
+            if (l.isNotEmpty()) out.add(l.take(12))
+            for (i in 0 until n.childCount) walk(n.getChild(i), depth + 1)
+        }
+        walk(root, 0)
+        return (root.packageName?.toString() ?: "?") + ": " + out.joinToString("|")
     }
 
     private fun findSend(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
