@@ -43,7 +43,6 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
-    // Prothom model-ta kaj na korle app nijei porer model try korbe
     private val MODELS = listOf(
         "gemini-3.8-flash",
         "gemini-3.5-flash-lite",
@@ -86,7 +85,6 @@ class MainActivity : Activity() {
     private var speakReply = false
     private var langTag = "bn-BD"
 
-    // Notun, sundor voice (Gemini TTS). Kaj na korle phone-er nijer voice-e fallback korbe
     private val TTS_MODEL = "gemini-3.1-flash-tts-preview"
     private val VOICES = listOf("Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
     private var voiceName = "Kore"
@@ -97,6 +95,7 @@ class MainActivity : Activity() {
     @Volatile private var wakeMode = false
     private lateinit var wakeBtn: Button
     private lateinit var pinBtn: Button
+    private lateinit var myVoiceBtn: Button
     private lateinit var voiceBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -123,8 +122,6 @@ class MainActivity : Activity() {
         handleWakeIntent(intent)
     }
 
-    // ---------- "Roza" bole dak ----------
-
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -135,6 +132,7 @@ class MainActivity : Activity() {
         super.onStart()
         wakeBtn.text = wakeLabel()
         pinBtn.text = pinLabel()
+        myVoiceBtn.text = myVoiceLabel()
         WakeService.instance?.pauseListening()
     }
 
@@ -145,7 +143,55 @@ class MainActivity : Activity() {
 
     private fun pinLabel() = if (PinStore.has(this)) "PIN: SET" else "PIN: NO"
 
-    // Phone-er screen lock-er PIN, shudhu WhatsApp wish-er shomoy lock khulte
+    private fun myVoiceLabel() = if (SpeakerStore.has(this)) "MyVoice: ON" else "MyVoice: OFF"
+
+    private fun onMyVoice() {
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 4)
+            return
+        }
+        if (SpeakerStore.has(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("My Voice")
+                .setMessage("Tomar voice save kora ache. Ekhon shudhu tomar voice-ei Roza jagbe.")
+                .setPositiveButton("Notun Record") { _, _ -> startVoiceEnroll() }
+                .setNeutralButton("Mushe dao") { _, _ ->
+                    SpeakerStore.clear(this)
+                    myVoiceBtn.text = myVoiceLabel()
+                    append("(Voice lock mushe dewa hoyeche)\n\n")
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("My Voice")
+                .setMessage(
+                    "Record chaple 4 second shomoy pabe. Tokhon normal golar awaje bolbe: " +
+                        "'Roza, amar kotha shuno'."
+                )
+                .setPositiveButton("Record") { _, _ -> startVoiceEnroll() }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun startVoiceEnroll() {
+        stopSpeaking()
+        myVoiceBtn.isEnabled = false
+        append("(Voice record shuru hocche...)\n")
+        VoiceEnroller.enroll(
+            this,
+            onStatus = { msg -> runOnUiThread { append("($msg)\n") } },
+            onDone = { ok, msg ->
+                runOnUiThread {
+                    myVoiceBtn.isEnabled = true
+                    myVoiceBtn.text = myVoiceLabel()
+                    append("($msg)\n\n")
+                }
+            }
+        )
+    }
+
     private fun askPin() {
         val box = EditText(this).apply {
             hint = "Screen lock-er PIN (shudhu number)"
@@ -197,7 +243,6 @@ class MainActivity : Activity() {
         handler.postDelayed({ wakeBtn.text = wakeLabel() }, 700)
     }
 
-    // WakeService "Roza" shunle eta ke khole dey
     private fun handleWakeIntent(i: Intent?) {
         if (i == null || !i.getBooleanExtra("wake", false)) return
         i.removeExtra("wake")
@@ -227,7 +272,6 @@ class MainActivity : Activity() {
         }, 700)
     }
 
-    // Kaj shesh, app-ke abar pichone pathay ar "Roza" shunte dey
     private fun finishWake() {
         if (!wakeMode) return
         wakeMode = false
@@ -293,6 +337,7 @@ class MainActivity : Activity() {
         }
         top.addView(keyBtn)
         root.addView(top)
+
         wakeBtn = Button(this).apply {
             text = wakeLabel()
             setOnClickListener { toggleWake() }
@@ -301,9 +346,14 @@ class MainActivity : Activity() {
             text = pinLabel()
             setOnClickListener { askPin() }
         }
+        myVoiceBtn = Button(this).apply {
+            text = myVoiceLabel()
+            setOnClickListener { onMyVoice() }
+        }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row2.addView(wakeBtn)
         row2.addView(pinBtn)
+        row2.addView(myVoiceBtn)
         root.addView(row2)
 
         scroll = ScrollView(this)
@@ -387,6 +437,14 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 4) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                onMyVoice()
+            } else {
+                append("(Mic permission na dile voice save kora jabe na)\n\n")
+            }
+            return
+        }
         if (requestCode == 3) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 toggleWake()
@@ -493,7 +551,6 @@ class MainActivity : Activity() {
         track = null
     }
 
-    // Age Gemini-r sundor voice try kore, na hole phone-er voice
     private fun speak(text: String) {
         stopSpeaking()
         val myId = speakId
@@ -563,7 +620,6 @@ class MainActivity : Activity() {
         return Base64.decode(data, Base64.DEFAULT)
     }
 
-    // Gemini voice: 24000 Hz, mono, 16-bit PCM
     private fun playPcm(pcm: ByteArray) {
         val rate = 24000
         val minBuf = AudioTrack.getMinBufferSize(
@@ -664,7 +720,6 @@ class MainActivity : Activity() {
         }
     }
 
-    // Model bhul/busy hole nijei abar try kore, tarpor porer model-e jay
     private fun callGemini(key: String): Reply {
         var lastError = "Kono model-e uttor pawa jayni"
         for (model in MODELS) {
@@ -748,7 +803,6 @@ class MainActivity : Activity() {
         return Reply(text, notes.joinToString("\n"))
     }
 
-    // AI jei kaj korte bole, shetar asol kaj ekhane hoy
     private fun runAction(name: String, args: JSONObject?): Pair<String, String> {
         val a = args ?: JSONObject()
         val reply = a.optString("reply", "Thik ache.")
@@ -809,7 +863,6 @@ class MainActivity : Activity() {
     }
 
     private fun scheduleWish(a: JSONObject, reply: String): Pair<String, String> {
-        // Lock thaka obosthay "Roza" bole kew WhatsApp schedule korte parbe na
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (wakeMode && km.isKeyguardLocked) {
             return Pair("Phone lock thakle WhatsApp schedule kora jabe na. Age app khulo.", "")
@@ -820,7 +873,6 @@ class MainActivity : Activity() {
         }
         var h = a.optInt("hour", -1)
         var m = a.optInt("minute", 0)
-        // "X minute por" hole ekhon-er shomoy theke app nijei hishab kore (uttor ashte deri holeo thik thake)
         val inMin = a.optInt("in_minutes", 0)
         if (inMin > 0) {
             val cal = Calendar.getInstance()
