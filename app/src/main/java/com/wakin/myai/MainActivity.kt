@@ -46,14 +46,15 @@ import kotlin.concurrent.thread
 
 class MainActivity : Activity() {
 
+    // Shobcheye fast model-ta prothome rakha hoyeche
     private val MODELS = listOf(
-        "gemini-3.8-flash",
         "gemini-3.5-flash-lite",
+        "gemini-3.8-flash",
         "gemini-3.1-flash-lite"
     )
 
     private val SYSTEM = "তুমি রোজা, ওয়াকিনের ব্যক্তিগত এআই সহকারী। তোমার নাম রোজা। " +
-        "উত্তর ছোট আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
+        "উত্তর খুব ছোট (১-২ লাইন) আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
         "ইউজার বাংলায় কথা বললে বা বাংলা মোডে থাকলে সবসময় খাঁটি বাংলা অক্ষরে উত্তর দাও, কখনোই বাংলিশে লিখবে না। " +
         "ইউজার ইংরেজিতে বললে ইংরেজিতে উত্তর দাও।"
 
@@ -94,8 +95,9 @@ class MainActivity : Activity() {
     private var langTag = "bn-BD"
 
     private val TTS_MODEL = "gemini-3.1-flash-tts-preview"
-    private val VOICES = listOf("Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
-    private var voiceName = "Kore"
+    // "Fast" = shathe shathe Bangla voice; baki gulo Gemini-r sundor voice (ektu slow)
+    private val VOICES = listOf("Fast", "Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
+    private var voiceName = "Fast"
     private var track: AudioTrack? = null
     private var mp: MediaPlayer? = null
     private var speakId = 0
@@ -109,7 +111,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Kore") ?: "Kore"
+        voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Fast") ?: "Fast"
+        if (voiceName !in VOICES) voiceName = "Fast"
         buildUi()
         tts = TextToSpeech(this) { status ->
             ttsReady = (status == TextToSpeech.SUCCESS)
@@ -540,9 +543,9 @@ class MainActivity : Activity() {
         voiceBtn.text = voiceName
         getSharedPreferences("myai", MODE_PRIVATE).edit().putString("voice", voiceName).apply()
         val sample = if (langTag == "bn-BD") {
-            "আমি তোমার ব্যক্তিগত এআই সহকারী। কেমন আছো?"
+            "আমি রোজা, তোমার ব্যক্তিগত এআই সহকারী।"
         } else {
-            "Hi, I am your personal assistant. How are you today?"
+            "Hi, I am Roza, your personal assistant."
         }
         speak(sample)
     }
@@ -562,22 +565,21 @@ class MainActivity : Activity() {
         mp = null
     }
 
-    // 1) Gemini voice try kore, 2) na hole online Bangla voice, 3) na hole phone-er voice
+    // "Fast" hole shorashori fast online Bangla voice; na hole Gemini voice try kore
     private fun speak(text: String) {
         stopSpeaking()
         val myId = speakId
         val key = getKey()
+        val useGemini = (voiceName != "Fast" && key.isNotEmpty())
         thread {
-            val pcm = if (key.isNotEmpty()) {
-                try { geminiSpeech(key, text) } catch (e: Exception) { null }
-            } else {
-                null
-            }
-            if (pcm != null) {
-                runOnUiThread {
-                    if (myId == speakId) playPcm(pcm)
+            if (useGemini) {
+                val pcm = try { geminiSpeech(key, text) } catch (e: Exception) { null }
+                if (pcm != null) {
+                    runOnUiThread {
+                        if (myId == speakId) playPcm(pcm)
+                    }
+                    return@thread
                 }
-                return@thread
             }
 
             val mp3 = try { googleOnlineTts(text) } catch (e: Exception) { null }
@@ -597,8 +599,8 @@ class MainActivity : Activity() {
         val url = URL("https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=$tl&q=$q")
         val conn = url.openConnection() as HttpURLConnection
         conn.setRequestProperty("User-Agent", "Mozilla/5.0")
-        conn.connectTimeout = 10000
-        conn.readTimeout = 15000
+        conn.connectTimeout = 8000
+        conn.readTimeout = 12000
         if (conn.responseCode !in 200..299) return null
         val f = File(cacheDir, "tts.mp3")
         conn.inputStream.use { inp -> f.outputStream().use { out -> inp.copyTo(out) } }
