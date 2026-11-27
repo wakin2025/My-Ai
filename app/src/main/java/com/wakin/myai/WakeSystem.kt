@@ -12,6 +12,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -21,6 +24,8 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
 import org.vosk.Recognizer
+import org.vosk.SpeakerModel
+import org.vosk.android.RecognitionListener as VoskListener
 import org.vosk.android.SpeechService
 import java.io.File
 import java.net.HttpURLConnection
@@ -28,10 +33,211 @@ import java.net.URL
 import java.util.Locale
 import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
+import kotlin.math.sqrt
 
 // ---------------------------------------------------------------
-// "Roza" shobdo-er jonno shob shomoy shune (phone-er vitore, internet lage na).
-// Shobdo shunle MainActivity khole dey.
+// Tomar nijer voice-er fingerprint save ar match kore
+// ---------------------------------------------------------------
+object SpeakerStore {
+    private const val PREFS = "myai_spk"
+    private const val KEY = "vec"
+
+    fun has(ctx: Context): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY)
+
+    fun save(ctx: Context, vec: FloatArray) {
+        val arr = JSONArray()
+        for (v in vec) arr.put(v.toDouble())
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+            .edit().putString(KEY, arr.toString()).apply()
+    }
+
+    fun load(ctx: Context): FloatArray? {
+        val s = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
+            ?: return null
+        return try {
+            val arr = JSONArray(s)
+            FloatArray(arr.length()) { i -> arr.getDouble(i).toFloat() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun clear(ctx: Context) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
+    }
+
+    fun extractSpk(jsonStr: String): FloatArray? {
+        return try {
+            val arr = JSONObject(jsonStr).optJSONArray("spk") ?: return null
+            if (arr.length() == 0) return null
+            FloatArray(arr.length()) { i -> arr.getDouble(i).toFloat() }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    fun similarity(a: FloatArray, b: FloatArray): Float {
+        if (a.size != b.size || a.isEmpty()) return 0f
+        var dot = 0.0
+        var na = 0.0
+        var nb = 0.0
+        for (i in a.indices) {
+            dot += a[i] * b[i]
+            na += a[i] * a[i]
+            nb += b[i] * b[i]
+        }
+        val denom = sqrt(na) * sqrt(nb)
+        return if (denom == 0.0) 0f else (dot / denom).toFloat()
+    }
+}
+
+// ---------------------------------------------------------------
+// Model download ar unzip korar helper
+// ---------------------------------------------------------------
+object VoskFiles {
+    const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+    const val MODEL_DIR = "vosk-model-small-en-us-0.15"
+
+    const val SPK_URL = "https://alphacephei.com/vosk/models/vosk-model-spk-0.4.zip"
+    const val SPK_DIR = "vosk-model-spk-0.4"
+
+    fun ensureMainModel(ctx: Context, onStatus: (String) -> Unit): File {
+        val root = File(ctx.filesDir, "vosk")
+        val marker = File(root, "ready")
+        if (!marker.exists()) {
+            root.mkdirs()
+            onStatus("Prothom bar: main model namachhi (~40MB)...")
+            val zip = File(ctx.cacheDir, "model.zip")
+            download(MODEL_URL, zip)
+            onStatus("Main model khulchi...")
+            unzip(zip, root)
+            zip.delete()
+            marker.writeText("ok")
+        }
+        return File(root, MODEL_DIR)
+    }
+
+    fun ensureSpkModel(ctx: Context, onStatus: (String) -> Unit): File {
+        val root = File(ctx.filesDir, "vosk-spk")
+        val marker = File(root, "ready")
+        if (!marker.exists()) {
+            root.mkdirs()
+            onStatus("Voice model namachhi (~13MB)...")
+            val zip = File(ctx.cacheDir, "spk.zip")
+            download(SPK_URL, zip)
+            onStatus("Voice model khulchi...")
+            unzip(zip, root)
+            zip.delete()
+            marker.writeText("ok")
+        }
+        return File(root, SPK_DIR)
+    }
+
+    private fun download(urlStr: String, out: File) {
+        val conn = URL(urlStr).openConnection() as HttpURLConnection
+        conn.connectTimeout = 20000
+        conn.readTimeout = 60000
+        conn.instanceFollowRedirects = true
+        conn.inputStream.use { inp ->
+            out.outputStream().use { o -> inp.copyTo(o) }
+        }
+    }
+
+    private fun unzip(zipFile: File, destDir: File) {
+        ZipInputStream(zipFile.inputStream().buffered()).use { zis ->
+            var entry = zis.nextEntry
+            while (entry != null) {
+                val f = File(destDir, entry.name)
+                if (entry.isDirectory) {
+                    f.mkdirs()
+                } else {
+                    f.parentFile?.mkdirs()
+                    f.outputStream().use { o -> zis.copyTo(o) }
+                }
+                zis.closeEntry()
+                entry = zis.nextEntry
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// Tomar voice 4 second record kore save kore
+// ---------------------------------------------------------------
+object VoiceEnroller {
+    fun enroll(
+        ctx: Context,
+        onStatus: (String) -> Unit,
+        onDone: (Boolean, String) -> Unit
+    ) {
+        thread {
+            var model: Model? = null
+            var spkModel: SpeakerModel? = null
+            var rec: Recognizer? = null
+            var audio: AudioRecord? = null
+            try {
+                val mainDir = VoskFiles.ensureMainModel(ctx, onStatus)
+                val spkDir = VoskFiles.ensureSpkModel(ctx, onStatus)
+
+                onStatus("Model load hocche...")
+                model = Model(mainDir.absolutePath)
+                spkModel = SpeakerModel(spkDir.absolutePath)
+                rec = Recognizer(model, 16000.0f)
+                rec.setSpeakerModel(spkModel)
+
+                val minBuf = AudioRecord.getMinBufferSize(
+                    16000, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                )
+                audio = AudioRecord(
+                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                    16000,
+                    AudioFormat.CHANNEL_IN_MONO,
+                    AudioFormat.ENCODING_PCM_16BIT,
+                    maxOf(minBuf, 4096)
+                )
+                if (audio.state != AudioRecord.STATE_INITIALIZED) {
+                    onDone(false, "Mic chalu kora jayni.")
+                    return@thread
+                }
+
+                onStatus("Ekhon bolo: 'Roza, amar kotha shuno' (4 second)...")
+                audio.startRecording()
+                val buf = ShortArray(2048)
+                var total = 0
+                val targetSamples = 16000 * 4 // 4 second
+                while (total < targetSamples) {
+                    val n = audio.read(buf, 0, buf.size)
+                    if (n > 0) {
+                        rec.acceptWaveForm(buf, n)
+                        total += n
+                    }
+                }
+                audio.stop()
+
+                val res = rec.finalResult
+                val vec = SpeakerStore.extractSpk(res)
+                if (vec == null) {
+                    onDone(false, "Voice bujha jayni, ektu jore abar try koro.")
+                } else {
+                    SpeakerStore.save(ctx, vec)
+                    onDone(true, "Tomar voice save hoye geche! Ekhon shudhu tomar voice-ei Roza jagbe.")
+                }
+            } catch (e: Throwable) {
+                onDone(false, "Shomossha hoyeche: " + (e.message ?: e.toString()).take(80))
+            } finally {
+                try { audio?.release() } catch (e: Exception) {}
+                try { rec?.close() } catch (e: Exception) {}
+                try { spkModel?.close() } catch (e: Exception) {}
+                try { model?.close() } catch (e: Exception) {}
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------
+// "Roza" shobdo-er jonno shob shomoy shune (offline).
+// Voice save kora thakle shudhu tomar voice-ei MainActivity khulbe.
 // ---------------------------------------------------------------
 class WakeService : Service() {
 
@@ -39,18 +245,16 @@ class WakeService : Service() {
         @Volatile
         var instance: WakeService? = null
 
-        const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
-        const val MODEL_DIR = "vosk-model-small-en-us-0.15"
         const val CHANNEL = "myai_wake"
         const val NOTIF_ID = 7
 
-        // Ei shobdo gulor kono ekta shunle "Roza" dhora hobe.
-        // Ingreji model "Roza" ke prai "rosa" hishabe shone. Dorkar hole ekhane bodlao.
         val WORDS = listOf("rosa", "roza", "rosie")
+        const val VOICE_THRESHOLD = 0.42f
     }
 
     private val handler = Handler(Looper.getMainLooper())
     private var model: Model? = null
+    private var spkModel: SpeakerModel? = null
     private var recognizer: Recognizer? = null
     private var speech: SpeechService? = null
 
@@ -61,7 +265,6 @@ class WakeService : Service() {
     private var ready = false
     private var started = false
     private var paused = false
-    private var triggered = false
     private var lastTrigger = 0L
 
     private val resumeTask = Runnable {
@@ -89,8 +292,6 @@ class WakeService : Service() {
         }
         return START_STICKY
     }
-
-    // ---------------- notification ----------------
 
     private fun buildNotification(text: String): Notification {
         val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
@@ -133,28 +334,21 @@ class WakeService : Service() {
         nm.notify(NOTIF_ID, buildNotification(text))
     }
 
-    // ---------------- model ----------------
-
     private fun prepareModel() {
         try {
-            val root = File(filesDir, "vosk")
-            val marker = File(root, "ready")
-            if (!marker.exists()) {
-                root.mkdirs()
-                updateNotification("Prothom bar: model namachhi (~40MB)...")
-                val zip = File(cacheDir, "model.zip")
-                download(MODEL_URL, zip)
-                updateNotification("Model khulchi...")
-                unzip(zip, root)
-                zip.delete()
-                marker.writeText("ok")
-            }
+            val mainDir = VoskFiles.ensureMainModel(this) { updateNotification(it) }
+            val spkDir = VoskFiles.ensureSpkModel(this) { updateNotification(it) }
             if (!alive) return
+
             updateNotification("Model load hocche...")
-            val m = Model(File(root, MODEL_DIR).absolutePath)
+            val m = Model(mainDir.absolutePath)
+            val sm = SpeakerModel(spkDir.absolutePath)
             val grammar = JSONArray(WORDS + listOf("[unk]")).toString()
             val r = Recognizer(m, 16000.0f, grammar)
+            r.setSpeakerModel(sm)
+
             model = m
+            spkModel = sm
             recognizer = r
             ready = true
             handler.post { if (alive && !paused) startListening() }
@@ -163,182 +357,118 @@ class WakeService : Service() {
         }
     }
 
-    private fun download(urlStr: String, out: File) {
-        val conn = URL(urlStr).openConnection() as HttpURLConnection
-        conn.connectTimeout = 20000
-        conn.readTimeout = 60000
-        conn.instanceFollowRedirects = true
-        val code = conn.responseCode
-        if (code !in 200..299) throw Exception("Download HTTP $code")
-        val total = conn.contentLength.toLong()
-        conn.inputStream.use { input ->
-            out.outputStream().use { o ->
-                val buf = ByteArray(64 * 1024)
-                var done = 0L
-                var last = 0
-                while (true) {
-                    val n = input.read(buf)
-                    if (n < 0) break
-                    o.write(buf, 0, n)
-                    done += n
-                    if (total > 0) {
-                        val p = (done * 100 / total).toInt()
-                        if (p >= last + 10) {
-                            last = p
-                            updateNotification("Model namachhi: $p%")
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun unzip(zip: File, dest: File) {
-        val destPath = dest.canonicalPath
-        ZipInputStream(zip.inputStream().buffered()).use { zis ->
-            var e = zis.nextEntry
-            while (e != null) {
-                val f = File(dest, e.name)
-                if (!f.canonicalPath.startsWith(destPath)) throw Exception("zip-e bhul path")
-                if (e.isDirectory) {
-                    f.mkdirs()
-                } else {
-                    f.parentFile?.mkdirs()
-                    f.outputStream().use { zis.copyTo(it) }
-                }
-                zis.closeEntry()
-                e = zis.nextEntry
-            }
-        }
-    }
-
-    // ---------------- shona ----------------
-
     private fun startListening() {
+        if (!alive || !ready || paused) return
+        if (speech != null) return
         val r = recognizer ?: return
-        if (!alive || !ready || paused || speech != null) return
-        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-            updateNotification("Mic permission nai")
-            return
-        }
         try {
-            r.reset()
             val s = SpeechService(r, 16000.0f)
             speech = s
-            triggered = false
-            s.startListening(object : org.vosk.android.RecognitionListener {
+            val status = if (SpeakerStore.has(this)) {
+                "Shudhu tomar voice-er jonno shunchi..."
+            } else {
+                "'Roza' bolle jagbo..."
+            }
+            updateNotification(status)
+            s.startListening(object : VoskListener {
                 override fun onPartialResult(hypothesis: String?) {
-                    check(hypothesis)
+                    if (SpeakerStore.has(this@WakeService)) return
+                    if (hasWakeWord(hypothesis, "partial")) triggerWake()
                 }
 
                 override fun onResult(hypothesis: String?) {
-                    check(hypothesis)
+                    if (!hasWakeWord(hypothesis, "text")) return
+                    val saved = SpeakerStore.load(this@WakeService)
+                    if (saved == null) {
+                        triggerWake()
+                        return
+                    }
+                    val spk = SpeakerStore.extractSpk(hypothesis ?: "")
+                    if (spk == null) return
+                    val score = SpeakerStore.similarity(saved, spk)
+                    if (score >= VOICE_THRESHOLD) {
+                        triggerWake()
+                    } else {
+                        val pct = (score * 100).toInt()
+                        updateNotification("Onno voice ($pct%) - jagini")
+                    }
                 }
 
                 override fun onFinalResult(hypothesis: String?) {}
-
-                override fun onError(exception: Exception?) {
-                    updateNotification("Mic error: " + (exception?.message ?: "").take(60))
-                }
-
+                override fun onError(exception: Exception?) {}
                 override fun onTimeout() {}
             })
-            updateNotification("Roza shunche. \"Roza\" bole dako")
-        } catch (e: Throwable) {
-            speech = null
-            updateNotification("Mic shuru hoyni: " + (e.message ?: "").take(60))
-        }
-    }
-
-    private fun stopListening() {
-        val s = speech ?: return
-        speech = null
-        try {
-            s.cancel()
-        } catch (e: Throwable) {
-        }
-        try {
-            s.shutdown()
-        } catch (e: Throwable) {
-        }
-    }
-
-    private fun check(hyp: String?) {
-        if (hyp == null || triggered) return
-        val text = try {
-            val o = JSONObject(hyp)
-            o.optString("partial", o.optString("text", ""))
         } catch (e: Exception) {
-            ""
+            updateNotification("Mic shomossha: " + (e.message ?: "").take(60))
         }
-        if (text.isEmpty()) return
-        val words = text.lowercase(Locale.ROOT).split(" ")
-        if (words.any { it in WORDS }) onWake()
     }
 
-    private fun onWake() {
+    private fun hasWakeWord(jsonStr: String?, key: String): Boolean {
+        if (jsonStr.isNullOrEmpty()) return false
+        val t = try {
+            JSONObject(jsonStr).optString(key, "").lowercase(Locale.ROOT)
+        } catch (e: Exception) {
+            return false
+        }
+        return WORDS.any { t.contains(it) }
+    }
+
+    private fun triggerWake() {
         val now = System.currentTimeMillis()
-        if (now - lastTrigger < 4000) return
-        triggered = true
+        if (now - lastTrigger < 4000L) return
         lastTrigger = now
+        handler.post {
+            pauseListening()
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            @Suppress("DEPRECATION")
+            val wl = pm.newWakeLock(
+                PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                    PowerManager.ON_AFTER_RELEASE,
+                "myai:wake"
+            )
+            wl.acquire(10_000L)
 
-        pauseListening()
-
-        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-        @Suppress("DEPRECATION")
-        val wl = pm.newWakeLock(
-            PowerManager.FULL_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP or
-                PowerManager.ON_AFTER_RELEASE,
-            "myai:wake"
-        )
-        wl.acquire(10_000L)
-
-        val i = Intent(this, MainActivity::class.java)
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        i.putExtra("wake", true)
-        try {
+            val i = Intent(this, MainActivity::class.java)
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            i.putExtra("wake", true)
             startActivity(i)
-            // Jodi MainActivity kono karone shesh na kore, 2 minute por nijei abar shuru hobe
-            resumeListening(120_000L)
-        } catch (e: Exception) {
-            resumeListening(1000L)
         }
     }
 
-    // MainActivity khola thakle ba kotha bolar shomoy mic charte hoy
     fun pauseListening() {
         handler.removeCallbacks(resumeTask)
         paused = true
-        stopListening()
+        try { speech?.stop() } catch (e: Exception) {}
+        try { speech?.shutdown() } catch (e: Exception) {}
+        speech = null
     }
 
-    fun resumeListening(delayMs: Long = 1200L) {
+    fun resumeListening() {
+        if (!alive) return
         handler.removeCallbacks(resumeTask)
-        handler.postDelayed(resumeTask, delayMs)
+        handler.postDelayed(resumeTask, 1200)
     }
 
     override fun onDestroy() {
         alive = false
         instance = null
         handler.removeCallbacksAndMessages(null)
-        stopListening()
-        try {
-            recognizer?.close()
-        } catch (e: Throwable) {
-        }
-        try {
-            model?.close()
-        } catch (e: Throwable) {
-        }
+        pauseListening()
+        try { recognizer?.close() } catch (e: Exception) {}
+        try { spkModel?.close() } catch (e: Exception) {}
+        try { model?.close() } catch (e: Exception) {}
         super.onDestroy()
     }
 }
 
-// Phone restart hole "Roza" chalu thakle abar shuru kore
+// Phone restart hole "Roza" abar chalu kora
 class WakeBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
-        val on = context.getSharedPreferences("myai", Context.MODE_PRIVATE).getBoolean("wake_on", false)
-        if (on) context.startForegroundService(Intent(context, WakeService::class.java))
+        val on = context.getSharedPreferences("myai", Context.MODE_PRIVATE)
+            .getBoolean("wake_on", false)
+        if (!on) return
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        context.startForegroundService(Intent(context, WakeService::class.java))
     }
 }
