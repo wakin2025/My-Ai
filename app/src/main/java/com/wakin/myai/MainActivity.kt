@@ -7,6 +7,7 @@ import android.app.KeyguardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.media.AudioAttributes
 import android.media.AudioFormat
 import android.media.AudioManager
@@ -16,6 +17,7 @@ import android.media.ToneGenerator
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.provider.MediaStore
 import android.provider.Settings
 import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
@@ -34,6 +36,7 @@ import android.widget.ScrollView
 import android.widget.TextView
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
@@ -83,7 +86,7 @@ class MainActivity : Activity() {
             "kono gaan ba video play korte bolle play_song, kono jaygay kichu likhte bolle type_text, " +
             "kauke call dite bolle make_call, torch jwalate/bondho korte bolle toggle_torch, " +
             "volume barate/komate bolle set_volume, kichu mone rakhte bolle save_memory, " +
-            "ar abohawa (weather) jante chaile get_weather function call koro. " +
+            "abohawa jante chaile get_weather, ar ki message ba notification ashche porhte bolle read_notifications call koro. " +
             "Voice-to-text-e gaan-er naam-e banan vul hote pare (jemon 'কে ছাড়িয়া' mane 'Kesariya', 'Kanti/Gandhi' mane 'gaan-ti'), " +
             "tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
     }
@@ -114,6 +117,7 @@ class MainActivity : Activity() {
     private lateinit var wakeBtn: Button
     private lateinit var pinBtn: Button
     private lateinit var myVoiceBtn: Button
+    private lateinit var lockBtn: Button
     private lateinit var voiceBtn: Button
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -152,6 +156,7 @@ class MainActivity : Activity() {
         wakeBtn.text = wakeLabel()
         pinBtn.text = pinLabel()
         myVoiceBtn.text = myVoiceLabel()
+        lockBtn.text = lockLabel()
         WakeService.instance?.pauseListening()
     }
 
@@ -163,6 +168,126 @@ class MainActivity : Activity() {
     private fun pinLabel() = if (PinStore.has(this)) "PIN: SET" else "PIN: NO"
 
     private fun myVoiceLabel() = if (SpeakerStore.isEnabled(this)) "MyVoice: ON" else "MyVoice: OFF"
+
+    private fun lockLabel() = if (UninstallLock.isLocked(this)) "Lock: ON" else "Lock: OFF"
+
+    private fun onUninstallLock() {
+        val box = EditText(this).apply {
+            hint = "Password dao"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+        }
+        if (UninstallLock.isLocked(this)) {
+            AlertDialog.Builder(this)
+                .setTitle("Uninstall Lock: ON")
+                .setMessage("OFF korte tomar password dao:")
+                .setView(box)
+                .setPositiveButton("OFF koro") { _, _ ->
+                    if (UninstallLock.checkPass(this, box.text.toString().trim())) {
+                        UninstallLock.setLocked(this, false)
+                        lockBtn.text = lockLabel()
+                        append("(Uninstall Lock OFF kora hoyeche)\n\n")
+                    } else {
+                        append("(Password vul hoyeche!)\n\n")
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        } else {
+            AlertDialog.Builder(this)
+                .setTitle("Uninstall Lock")
+                .setMessage("Notun password set koro (Accessibility ON thakle password chara app delete kora jabe na):")
+                .setView(box)
+                .setPositiveButton("ON koro") { _, _ ->
+                    val p = box.text.toString().trim()
+                    if (p.length >= 4) {
+                        UninstallLock.setPass(this, p)
+                        lockBtn.text = lockLabel()
+                        append("(Uninstall Lock ON hoyeche! Password mone rekho)\n\n")
+                    } else {
+                        append("(Password kompokkhe 4 okkhorer hote hobe)\n\n")
+                    }
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+    }
+
+    private fun onCamera() {
+        stopSpeaking()
+        try {
+            val i = Intent(MediaStore.ACTION_IMAGE_CAPTURE)
+            startActivityForResult(i, 101)
+        } catch (e: Exception) {
+            append("(Camera khola jayni: ${e.message})\n\n")
+        }
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 101 && resultCode == RESULT_OK) {
+            @Suppress("DEPRECATION")
+            val bmp = data?.extras?.get("data") as? Bitmap ?: return
+            val baos = ByteArrayOutputStream()
+            bmp.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+            val b64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP)
+            sendImageMessage(b64)
+        }
+    }
+
+    private fun sendImageMessage(b64: String) {
+        val key = getKey()
+        if (key.isEmpty()) {
+            askKey()
+            return
+        }
+        val prompt = input.text.toString().trim().ifEmpty {
+            "এই ছবিতে কী আছে তা সহজ বাংলায় ১-২ লাইনে বলো।"
+        }
+        input.setText("")
+        append("Tumi: [Chhobi] $prompt\n\n")
+        speakReply = true
+
+        thread {
+            try {
+                val url = URL("https://generativelanguage.googleapis.com/v1beta/models/${MODELS[0]}:generateContent")
+                val conn = url.openConnection() as HttpURLConnection
+                conn.requestMethod = "POST"
+                conn.setRequestProperty("Content-Type", "application/json")
+                conn.setRequestProperty("x-goog-api-key", key)
+                conn.connectTimeout = 20000
+                conn.readTimeout = 45000
+                conn.doOutput = true
+
+                val parts = JSONArray()
+                    .put(JSONObject().put("text", prompt))
+                    .put(
+                        JSONObject().put(
+                            "inline_data",
+                            JSONObject().put("mime_type", "image/jpeg").put("data", b64)
+                        )
+                    )
+                val body = JSONObject()
+                    .put("contents", JSONArray().put(JSONObject().put("parts", parts)))
+                conn.outputStream.use { it.write(body.toString().toByteArray()) }
+
+                val code = conn.responseCode
+                val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+                val resp = stream?.bufferedReader()?.use { it.readText() } ?: ""
+                if (code !in 200..299) throw Exception("HTTP $code")
+                val reply = parseReply(resp)
+                runOnUiThread {
+                    append("AI: ${reply.text}\n\n")
+                    speak(reply.text)
+                }
+            } catch (e: Exception) {
+                runOnUiThread {
+                    stopSpeaking()
+                    append("Network/Error: ${e.message}\n\n")
+                }
+            }
+        }
+    }
 
     private fun onMyVoice() {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
@@ -375,10 +500,15 @@ class MainActivity : Activity() {
             text = myVoiceLabel()
             setOnClickListener { onMyVoice() }
         }
+        lockBtn = Button(this).apply {
+            text = lockLabel()
+            setOnClickListener { onUninstallLock() }
+        }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row2.addView(wakeBtn)
         row2.addView(pinBtn)
         row2.addView(myVoiceBtn)
+        row2.addView(lockBtn)
         root.addView(row2)
 
         scroll = ScrollView(this)
@@ -399,6 +529,11 @@ class MainActivity : Activity() {
             maxLines = 4
         }
         bottom.addView(input, LinearLayout.LayoutParams(0, wrap, 1f))
+        val camBtn = Button(this).apply {
+            text = "Cam"
+            setOnClickListener { onCamera() }
+        }
+        bottom.addView(camBtn)
         micBtn = Button(this).apply {
             text = "Mic"
             setOnClickListener { onMic() }
@@ -440,8 +575,6 @@ class MainActivity : Activity() {
         chatView.append(s)
         scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
     }
-
-    // ---------- Voice: shona ----------
 
     private fun onMic() {
         stopSpeaking()
@@ -555,8 +688,6 @@ class MainActivity : Activity() {
         listening = true
         r.startListening(intent)
     }
-
-    // ---------- Voice: bola ----------
 
     private fun nextVoice() {
         val i = VOICES.indexOf(voiceName)
@@ -744,8 +875,6 @@ class MainActivity : Activity() {
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "myai")
     }
 
-    // ---------- AI ----------
-
     private fun message(role: String, text: String): JSONObject =
         JSONObject().put("role", role)
             .put("parts", JSONArray().put(JSONObject().put("text", text)))
@@ -905,6 +1034,11 @@ class MainActivity : Activity() {
         return Reply(text, notes.joinToString("\n"))
     }
 
+    private fun isNotifAccessOn(): Boolean {
+        val s = Settings.Secure.getString(contentResolver, "enabled_notification_listeners") ?: return false
+        return s.contains(packageName)
+    }
+
     private fun runAction(name: String, args: JSONObject?): Pair<String, String> {
         val a = args ?: JSONObject()
         val reply = a.optString("reply", "ঠিক আছে।")
@@ -1054,6 +1188,16 @@ class MainActivity : Activity() {
                 val w = WeatherHelper.get(city)
                 if (w.isNotEmpty()) Pair("$city এর আবহাওয়া এখন: $w", "Weather: $w")
                 else Pair("আবহাওয়ার খবর পাওয়া যায়নি।", "")
+            }
+            "read_notifications" -> {
+                if (!isNotifAccessOn()) {
+                    runOnUiThread { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }
+                    Pair("আগে নোটিফিকেশন অ্যাক্সেস চালু করো, তারপর আবার বলো।", "Open Notification Access")
+                } else {
+                    val s = NotifStore.readSummary(this)
+                    if (s.isEmpty()) Pair("কোনো নতুন মেসেজ বা নোটিফিকেশন নেই।", "")
+                    else Pair(s, "Notifications read")
+                }
             }
             else -> Pair(reply, "")
         }
@@ -1282,6 +1426,13 @@ class MainActivity : Activity() {
                     "city",
                     JSONObject().put("type", "STRING").put("description", "City name in English, default Bhairab")
                 ).put("reply", reply),
+                listOf("reply")
+            )
+        )
+        decls.put(
+            fn(
+                "read_notifications", "Phone-e asha shesh message ba notification pore shonay",
+                JSONObject().put("reply", reply),
                 listOf("reply")
             )
         )
