@@ -78,7 +78,9 @@ class MainActivity : Activity() {
             "User 'X minute por' ba 'ekhon theke' bolle schedule_whatsapp-e shudhu in_minutes dao " +
             "(hour/minute dio na). 'ratri 9 tay'-er moto spasto shomoy bolle hour ar minute dao. " +
             "User kono app khulte bolle open_app, kono app-e kichu search korte bolle search_in_app, " +
-            "kono gaan ba video play korte bolle play_song, ar kono jaygay kichu likhte bolle type_text function call koro."
+            "kono gaan ba video play korte bolle play_song, ar kono jaygay kichu likhte bolle type_text function call koro. " +
+            "Voice-to-text-e gaan-er naam-e banan vul hote pare (jemon 'কে ছাড়িয়া' mane 'Kesariya', 'Kanti/Gandhi' mane 'gaan-ti'), " +
+            "tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
     }
 
     private lateinit var chatView: TextView
@@ -212,14 +214,14 @@ class MainActivity : Activity() {
 
     private fun askPin() {
         val box = EditText(this).apply {
-            hint = "Screen lock-er PIN (shudhu number)"
+            hint = "Screen lock / App lock-er PIN (shudhu number)"
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
         }
         AlertDialog.Builder(this)
             .setTitle("Lock PIN")
             .setMessage(
-                "PIN phone-e encrypted thake. Ei app shudhu schedule kora WhatsApp wish " +
-                    "pathanor shomoy PIN diye lock khulbe, onno kono shomoy na."
+                "PIN phone-e encrypted thake. WhatsApp wish ba locked app kholar shomoy " +
+                    "ei PIN diye auto unlock hobe."
             )
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
@@ -1148,7 +1150,7 @@ class MainActivity : Activity() {
         val queryP = JSONObject().put("type", "STRING")
             .put("description", "Ja search korte hobe")
         val songP = JSONObject().put("type", "STRING")
-            .put("description", "Jei gaan ba video play korte hobe tar naam")
+            .put("description", "Jei gaan ba video play korte hobe tar shothik naam")
         val textP = JSONObject().put("type", "STRING")
             .put("description", "Jei lekha-ta screen-er box-e type korte hobe")
 
