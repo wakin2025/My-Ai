@@ -93,8 +93,8 @@ object AutoTask {
         targetPkg = pkg
         text = query
         val now = System.currentTimeMillis()
-        readyAt = now + 2200L
-        until = now + 18_000L
+        readyAt = now + 2600L
+        until = now + 22_000L
         lastClick = 0L
     }
 
@@ -311,9 +311,6 @@ object AppHelper {
     }
 }
 
-// ---------------------------------------------------------------
-// Screen Lock PIN ar App Lock PIN alada vabe encrypted save kore
-// ---------------------------------------------------------------
 object PinStore {
     private const val PREFS = "myai_pin"
     private const val KEY_SCREEN = "screen_blob"
@@ -381,7 +378,7 @@ object PinStore {
 object PinTyper {
     @Volatile var armedUntil = 0L
     @Volatile var typing = false
-    @Volatile var mode = "screen" // "screen" ba "app"
+    @Volatile var mode = "screen"
     @Volatile var seen = ""
 
     fun armScreen() {
@@ -860,10 +857,12 @@ class WaSendService : AccessibilityService() {
         if (mode == "play_result") {
             if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             if (System.currentTimeMillis() < AutoTask.readyAt) return
-            val item = findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0) ?: return
-            if (item.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            val item = findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0)
+            if (item != null && item.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 AutoTask.clear()
+                return
             }
+            findPlayButtonInScreen(root, 0)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             return
         }
 
@@ -906,6 +905,21 @@ class WaSendService : AccessibilityService() {
         }
     }
 
+    private fun findPlayButtonInScreen(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
+        val txt = (n.text?.toString() ?: "").lowercase(Locale.ROOT)
+        if ((desc == "play" || txt == "play") && n.isVisibleToUser) {
+            val c = clickable(n)
+            if (c != null) return c
+        }
+        for (i in 0 until n.childCount) {
+            val r = findPlayButtonInScreen(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
     private fun findMatchingResult(n: AccessibilityNodeInfo?, query: String, depth: Int): AccessibilityNodeInfo? {
         if (n == null || depth > 25 || query.isBlank()) return null
         val q = query.trim().lowercase(Locale.ROOT)
@@ -913,7 +927,7 @@ class WaSendService : AccessibilityService() {
         if (!n.isEditable && n.isVisibleToUser) {
             val rect = Rect()
             n.getBoundsInScreen(rect)
-            if (rect.top > 240) {
+            if (rect.top > 340 && rect.bottom < 1750) {
                 val t = (n.text?.toString() ?: "").lowercase(Locale.ROOT)
                 val d = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
                 if ((t.contains(firstWord) || d.contains(firstWord)) &&
@@ -937,7 +951,7 @@ class WaSendService : AccessibilityService() {
             val rect = Rect()
             n.getBoundsInScreen(rect)
             val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
-            if (rect.top > 260 && rect.height() > 120 && rect.width() > 300) {
+            if (rect.top > 340 && rect.bottom < 1750 && rect.height() > 130 && rect.width() > 320) {
                 if (!desc.contains("ad ") && !desc.contains("sponsored")) {
                     return n
                 }
