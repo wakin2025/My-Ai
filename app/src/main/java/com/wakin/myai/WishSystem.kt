@@ -387,19 +387,22 @@ object PinTyper {
     @Volatile var typing = false
     @Volatile var mode = "screen"
     @Volatile var seen = ""
+    @Volatile var lastUsePassClick = 0L
 
     fun armScreen() {
         mode = "screen"
         armedUntil = System.currentTimeMillis() + 40_000L
         typing = false
         seen = ""
+        lastUsePassClick = 0L
     }
 
     fun armApp() {
         mode = "app"
-        armedUntil = System.currentTimeMillis() + 12_000L
+        armedUntil = System.currentTimeMillis() + 18_000L
         typing = false
         seen = ""
+        lastUsePassClick = 0L
     }
 
     fun isArmed() = System.currentTimeMillis() < armedUntil
@@ -865,7 +868,6 @@ class WaSendService : AccessibilityService() {
             if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             if (System.currentTimeMillis() < AutoTask.readyAt) return
 
-            // YouTube popup ("Not Now") thakle age bondho kore
             val notNow = findExactButton(root, listOf("not now", "dismiss", "skip"), 0)
             if (notNow != null) {
                 notNow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -873,7 +875,6 @@ class WaSendService : AccessibilityService() {
                 return
             }
 
-            // PLAYit-e "No result found" dekhale MY MUSIC tab-e click kore
             val screenTxt = collectText(root, 0).lowercase(Locale.ROOT)
             if (!AutoTask.switchedMusicTab && screenTxt.contains("no result found")) {
                 val musicTab = findExactButton(root, listOf("my music", "music"), 0)
@@ -885,7 +886,6 @@ class WaSendService : AccessibilityService() {
                 }
             }
 
-            // YouTube / Vanced hole shorashori 1st video click kore
             val isYt = pkg.contains("youtube") || pkg.contains("vanced")
             val item = if (isYt) {
                 findFirstBigResult(root, 0) ?: findMatchingResult(root, text, 0)
@@ -1050,12 +1050,42 @@ class WaSendService : AccessibilityService() {
         return null
     }
 
+    private fun findUsePasswordButton(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val t = (n.text?.toString() ?: "").trim().lowercase(Locale.ROOT)
+        val d = (n.contentDescription?.toString() ?: "").trim().lowercase(Locale.ROOT)
+        val combined = "$t $d"
+        if (combined.contains("use password") || combined.contains("enter password") ||
+            combined.contains("use pin") || combined.contains("পাসওয়ার্ড ব্যবহার") ||
+            combined.contains("পাসওয়ার্ড ব্যবহার")
+        ) {
+            val c = clickable(n)
+            if (c != null) return c
+        }
+        for (i in 0 until n.childCount) {
+            val r = findUsePasswordButton(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
     private fun tryTypePin() {
         val pin = if (PinTyper.mode == "app") PinStore.getApp(this) else PinStore.getScreen(this)
         if (pin.isNullOrEmpty()) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: ""
-        if (pkg.startsWith("com.whatsapp") || pkg == packageName || pkg == "com.google.android.youtube") return
+        if (pkg.startsWith("com.whatsapp") || pkg == packageName) return
+
+        // Face lock thakle age "Use password" button-e click kore
+        val now = System.currentTimeMillis()
+        if (now - PinTyper.lastUsePassClick > 1500L) {
+            val usePass = findUsePasswordButton(root, 0)
+            if (usePass != null) {
+                PinTyper.lastUsePassClick = now
+                usePass.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                return
+            }
+        }
 
         for (d in pin.toSet()) {
             if (findKey(root, d, 0) == null) {
