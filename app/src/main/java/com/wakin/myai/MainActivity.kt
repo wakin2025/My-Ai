@@ -113,6 +113,10 @@ class MainActivity : Activity() {
     @Volatile private var busy = false
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var wakeMode = false
+    @Volatile private var continuousMode = false
+    @Volatile private var inForeground = false
+    private var pcmDoneTask: Runnable? = null
+
     private lateinit var wakeBtn: Button
     private lateinit var screenPinBtn: Button
     private lateinit var appPinBtn: Button
@@ -132,11 +136,11 @@ class MainActivity : Activity() {
                     override fun onStart(utteranceId: String?) {}
 
                     override fun onDone(utteranceId: String?) {
-                        runOnUiThread { if (wakeMode) handler.postDelayed({ finishWake() }, 600) }
+                        runOnUiThread { onSpeakFinished() }
                     }
 
                     override fun onError(utteranceId: String?) {
-                        runOnUiThread { if (wakeMode) handler.postDelayed({ finishWake() }, 600) }
+                        runOnUiThread { onSpeakFinished() }
                     }
                 })
             }
@@ -153,6 +157,7 @@ class MainActivity : Activity() {
 
     override fun onStart() {
         super.onStart()
+        inForeground = true
         wakeBtn.text = wakeLabel()
         screenPinBtn.text = screenPinLabel()
         appPinBtn.text = appPinLabel()
@@ -163,7 +168,40 @@ class MainActivity : Activity() {
 
     override fun onStop() {
         super.onStop()
+        inForeground = false
+        stopListeningOnly()
         WakeService.instance?.resumeListening()
+    }
+
+    private fun onSpeakFinished() {
+        if (continuousMode && inForeground && !busy) {
+            handler.postDelayed({
+                if (continuousMode && inForeground && !busy && !listening) {
+                    startListening()
+                }
+            }, 500)
+        } else if (wakeMode && !continuousMode) {
+            handler.postDelayed({ finishWake() }, 600)
+        }
+    }
+
+    private fun stopListeningOnly() {
+        handler.removeCallbacksAndMessages(null)
+        try {
+            recognizer?.cancel()
+            recognizer?.destroy()
+        } catch (e: Exception) {
+        }
+        recognizer = null
+        listening = false
+        micBtn.text = "Mic"
+    }
+
+    private fun stopContinuous() {
+        continuousMode = false
+        stopListeningOnly()
+        stopSpeaking()
+        if (wakeMode) finishWake()
     }
 
     private fun screenPinLabel() = if (PinStore.hasScreen(this)) "ScrPIN: SET" else "ScrPIN: NO"
@@ -427,6 +465,7 @@ class MainActivity : Activity() {
         if (i == null || !i.getBooleanExtra("wake", false)) return
         i.removeExtra("wake")
         wakeMode = true
+        continuousMode = true
         window.addFlags(
             WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON or
@@ -434,7 +473,6 @@ class MainActivity : Activity() {
                 WindowManager.LayoutParams.FLAG_DISMISS_KEYGUARD
         )
         handler.removeCallbacksAndMessages(null)
-        handler.postDelayed({ finishWake() }, 90_000)
         handler.postDelayed({
             try {
                 ToneGenerator(AudioManager.STREAM_MUSIC, 80).startTone(ToneGenerator.TONE_PROP_ACK, 150)
@@ -455,13 +493,8 @@ class MainActivity : Activity() {
     private fun finishWake() {
         if (!wakeMode) return
         wakeMode = false
-        handler.removeCallbacksAndMessages(null)
-        try {
-            recognizer?.cancel()
-        } catch (e: Exception) {
-        }
-        listening = false
-        micBtn.text = "Mic"
+        continuousMode = false
+        stopListeningOnly()
         window.clearFlags(
             WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
                 WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
@@ -470,7 +503,8 @@ class MainActivity : Activity() {
     }
 
     override fun onDestroy() {
-        recognizer?.destroy()
+        continuousMode = false
+        stopListeningOnly()
         stopSpeaking()
         tts?.shutdown()
         super.onDestroy()
@@ -615,15 +649,17 @@ class MainActivity : Activity() {
     }
 
     private fun onMic() {
-        stopSpeaking()
-        if (listening) {
-            recognizer?.stopListening()
+        if (continuousMode || listening) {
+            stopContinuous()
+            append("(Mic bondho kora hoyeche)\n\n")
             return
         }
+        stopSpeaking()
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 1)
             return
         }
+        continuousMode = true
         startListening()
     }
 
@@ -668,6 +704,7 @@ class MainActivity : Activity() {
         if (requestCode == 1 && grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         ) {
+            continuousMode = true
             startListening()
         } else {
             append("(Mic permission na dile shunte parbo na)\n\n")
@@ -675,35 +712,41 @@ class MainActivity : Activity() {
     }
 
     private fun startListening() {
+        if (!inForeground) return
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             append("(Ei phone-e voice recognition nai. Google app update kore dekho)\n\n")
+            continuousMode = false
             return
         }
-        recognizer?.destroy()
+        try { recognizer?.destroy() } catch (e: Exception) {}
         val r = SpeechRecognizer.createSpeechRecognizer(this)
         recognizer = r
         r.setRecognitionListener(object : RecognitionListener {
             override fun onReadyForSpeech(params: Bundle?) {
-                micBtn.text = "Shunchi..."
+                micBtn.text = "Stop"
             }
 
             override fun onBeginningOfSpeech() {}
             override fun onRmsChanged(rmsdB: Float) {}
             override fun onBufferReceived(buffer: ByteArray?) {}
-            override fun onEndOfSpeech() {
-                micBtn.text = "Mic"
-            }
+            override fun onEndOfSpeech() {}
 
             override fun onError(error: Int) {
                 listening = false
-                micBtn.text = "Mic"
-                append("(Shunte parini, abar bolo. error $error)\n\n")
-                if (wakeMode) handler.postDelayed({ finishWake() }, 1500)
+                if (continuousMode && inForeground && !busy) {
+                    val delay = if (error == SpeechRecognizer.ERROR_RECOGNIZER_BUSY) 1200L else 500L
+                    handler.postDelayed({
+                        if (continuousMode && inForeground && !busy && !listening) {
+                            startListening()
+                        }
+                    }, delay)
+                } else {
+                    micBtn.text = "Mic"
+                }
             }
 
             override fun onResults(results: Bundle?) {
                 listening = false
-                micBtn.text = "Mic"
                 val text = results
                     ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
                     ?.firstOrNull()
@@ -711,6 +754,14 @@ class MainActivity : Activity() {
                     speakReply = true
                     input.setText(text)
                     sendMessage()
+                } else if (continuousMode && inForeground && !busy) {
+                    handler.postDelayed({
+                        if (continuousMode && inForeground && !busy && !listening) {
+                            startListening()
+                        }
+                    }, 400)
+                } else {
+                    micBtn.text = "Mic"
                 }
             }
 
@@ -722,8 +773,13 @@ class MainActivity : Activity() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
+            // Kotha bolar majhe ektu thamleo jeno mic sathe sathe bondho na hoy
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 10000L)
         }
         listening = true
+        micBtn.text = "Stop"
         r.startListening(intent)
     }
 
@@ -742,6 +798,8 @@ class MainActivity : Activity() {
 
     private fun stopSpeaking() {
         speakId++
+        pcmDoneTask?.let { handler.removeCallbacks(it) }
+        pcmDoneTask = null
         tts?.stop()
         track?.let {
             try { it.stop() } catch (e: Exception) {}
@@ -806,18 +864,16 @@ class MainActivity : Activity() {
                     .build()
             )
             player.setDataSource(file.absolutePath)
-            player.setOnCompletionListener {
-                if (wakeMode) handler.postDelayed({ finishWake() }, 600)
-            }
+            player.setOnCompletionListener { onSpeakFinished() }
             player.setOnErrorListener { _, _, _ ->
-                if (wakeMode) handler.postDelayed({ finishWake() }, 600)
+                onSpeakFinished()
                 true
             }
             player.prepare()
             mp = player
             player.start()
         } catch (e: Exception) {
-            speakSystem("")
+            onSpeakFinished()
         }
     }
 
@@ -896,14 +952,20 @@ class MainActivity : Activity() {
         track = t
         t.write(pcm, 0, pcm.size)
         t.play()
-        if (wakeMode) {
-            handler.postDelayed({ finishWake() }, pcm.size / 48L + 1200L)
-        }
+        val task = Runnable { onSpeakFinished() }
+        pcmDoneTask = task
+        handler.postDelayed(task, pcm.size / 48L + 800L)
     }
 
     private fun speakSystem(text: String) {
-        val t = tts ?: return
-        if (!ttsReady || text.isEmpty()) return
+        val t = tts ?: run {
+            onSpeakFinished()
+            return
+        }
+        if (!ttsReady || text.isEmpty()) {
+            onSpeakFinished()
+            return
+        }
         val hasBangla = text.any { it in '\u0980'..'\u09FF' }
         val tag = if (hasBangla) "bn-BD" else "en-US"
         val res = t.setLanguage(Locale.forLanguageTag(tag))
@@ -911,6 +973,7 @@ class MainActivity : Activity() {
             append(
                 "(Ei phone-e voice nai. Settings > text-to-speech e Google engine-e voice namao)\n\n"
             )
+            onSpeakFinished()
             return
         }
         t.speak(text, TextToSpeech.QUEUE_FLUSH, null, "myai")
@@ -934,6 +997,16 @@ class MainActivity : Activity() {
         if (text.isEmpty()) return
 
         val lower = text.lowercase(Locale.ROOT)
+        // Continuous mic bondho korar command
+        val stopWords = listOf("বন্ধ করো", "চুপ করো", "ঘুমাও", "থামো", "bondho koro", "chup koro", "ghumao", "stop listening", "bye")
+        if (continuousMode && stopWords.any { lower == it || lower.startsWith(it) }) {
+            input.setText("")
+            append("Tumi: $text\nAI: ঠিক আছে, আবার ডাকলে আসবো।\n\n")
+            continuousMode = false
+            speak("ঠিক আছে, আবার ডাকলে আসবো।")
+            return
+        }
+
         val findKeywords = listOf("কোথায়", "কোথায়", "কই", "kothai", "kothay", "koi", "where are you")
         if (findKeywords.any { lower.contains(it) }) {
             input.setText("")
@@ -977,14 +1050,18 @@ class MainActivity : Activity() {
                     append("AI: ${reply.text}\n")
                     if (reply.note.isNotEmpty()) append("(${reply.note})\n")
                     append("\n")
-                    if (shouldSpeak) speak(reply.text)
+                    if (shouldSpeak) speak(reply.text) else onSpeakFinished()
                 }
             } catch (e: Exception) {
                 removeFromHistory(userMsg)
                 runOnUiThread {
                     stopSpeaking()
                     append("Network/Error: ${e.message}\n\n")
-                    if (wakeMode) handler.postDelayed({ finishWake() }, 3000)
+                    if (continuousMode && inForeground) {
+                        handler.postDelayed({
+                            if (continuousMode && inForeground && !busy && !listening) startListening()
+                        }, 1500)
+                    }
                 }
             } finally {
                 busy = false
@@ -1134,6 +1211,7 @@ class MainActivity : Activity() {
                 val opened = AppHelper.openApp(this, listOf(appName, alt))
                 if (opened != null) {
                     wakeMode = false
+                    continuousMode = false
                     Pair(reply, "Opened: ${opened.label}")
                 } else {
                     Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
@@ -1149,6 +1227,7 @@ class MainActivity : Activity() {
                     val note = AppHelper.searchInApp(this, listOf(appName, alt), query)
                     if (note.isNotEmpty()) {
                         wakeMode = false
+                        continuousMode = false
                         Pair(reply, note)
                     } else {
                         Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
@@ -1164,6 +1243,7 @@ class MainActivity : Activity() {
                 } else {
                     val note = AppHelper.playSong(this, listOf(appName, alt), song)
                     wakeMode = false
+                    continuousMode = false
                     Pair(reply, note)
                 }
             }
@@ -1179,6 +1259,7 @@ class MainActivity : Activity() {
                     } else {
                         AutoTask.armType(txt)
                         wakeMode = false
+                        continuousMode = false
                         runOnUiThread { handler.postDelayed({ moveTaskToBack(true) }, 400) }
                         Pair(reply, "Typing: $txt")
                     }
@@ -1200,6 +1281,7 @@ class MainActivity : Activity() {
                         if (!direct) runOnUiThread { requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), 5) }
                         PhoneControl.callNumber(this, m.number, direct)
                         wakeMode = false
+                        continuousMode = false
                         Pair(reply, "Calling: ${m.name}")
                     }
                 }
