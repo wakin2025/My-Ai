@@ -56,18 +56,17 @@ class MainActivity : Activity() {
     )
 
     private val SYSTEM = "তুমি নাবো, ওয়াকিনের ব্যক্তিগত এআই সহকারী। তোমার নাম নাবো। " +
-        "উত্তর খুব ছোট (১-২ লাইন) আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
-        "ইউজার বাংলায় কথা বললে বা বাংলা মোডে থাকলে সবসময় খাঁটি বাংলা অক্ষরে উত্তর দাও, কখনোই বাংলিশে লিখবে না। " +
-        "ইউজার ইংরেজিতে বললে ইংরেজিতে উত্তর দাও।"
+        "উত্তর খুব ছোট (১-২ লাইন), মিষ্টি আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
+        "ইউজার বাংলায় কথা বললে খাঁটি বাংলা অক্ষরে উত্তর দাও (বাংলিশে নয়), আর ইংরেজিতে কথা বললে বা ইংরেজি চাইলে সুন্দর ইংরেজিতে উত্তর দাও।"
 
     private class Reply(val text: String, val note: String)
 
     private fun systemText(): String {
         val now = SimpleDateFormat("EEEE, d MMMM yyyy, HH:mm", Locale.ENGLISH).format(Date())
         val langRule = if (langTag == "bn-BD") {
-            " Ekhon Bangla mode chalu ache, tai obosshoi shudhu Bangla okkhore (বাংলা) uttor dao."
+            " User Bangla-y kotha bolle khanti Bangla okkhore (বাংলা) uttor dao, ar English-e kotha bolle ba English chaile shundor English-e uttor dao."
         } else {
-            " Reply in English."
+            " Reply in natural English (or Bangla if the user speaks Bangla)."
         }
         val mem = MemoryStore.allText(this)
         val memRule = if (mem.isNotEmpty()) " User-er mone rakha tothyo: $mem." else ""
@@ -106,8 +105,8 @@ class MainActivity : Activity() {
     private var langTag = "bn-BD"
 
     private val TTS_MODEL = "gemini-3.1-flash-tts-preview"
-    private val VOICES = listOf("Fast", "Kore", "Aoede", "Leda", "Zephyr", "Sulafat")
-    private var voiceName = "Fast"
+    private val VOICES = listOf("Aoede", "Kore", "Leda", "Zephyr", "Sulafat", "Fast")
+    private var voiceName = "Aoede"
     private var track: AudioTrack? = null
     private var mp: MediaPlayer? = null
     private var speakId = 0
@@ -122,8 +121,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Fast") ?: "Fast"
-        if (voiceName !in VOICES) voiceName = "Fast"
+        voiceName = getSharedPreferences("myai", MODE_PRIVATE).getString("voice", "Aoede") ?: "Aoede"
+        if (voiceName !in VOICES) voiceName = "Aoede"
         buildUi()
         tts = TextToSpeech(this) { status ->
             ttsReady = (status == TextToSpeech.SUCCESS)
@@ -695,9 +694,9 @@ class MainActivity : Activity() {
         voiceBtn.text = voiceName
         getSharedPreferences("myai", MODE_PRIVATE).edit().putString("voice", voiceName).apply()
         val sample = if (langTag == "bn-BD") {
-            "আমি নাবো, তোমার ব্যক্তিগত এআই সহকারী।"
+            "আমি নাবো, তোমার ব্যক্তিগত এআই সহকারী। I can speak both Bangla and English."
         } else {
-            "Hi, I am Nabo, your personal assistant."
+            "Hi, I am Nabo, your personal assistant. আমি বাংলা আর ইংরেজি দুইটাই বলতে পারি।"
         }
         speak(sample)
     }
@@ -743,7 +742,7 @@ class MainActivity : Activity() {
 
     private fun googleOnlineTts(text: String): File? {
         val hasBangla = text.any { it in '\u0980'..'\u09FF' }
-        val tl = if (hasBangla || langTag == "bn-BD") "bn" else "en"
+        val tl = if (hasBangla) "bn" else "en"
         val clean = text.replace("\n", " ").trim().take(190)
         if (clean.isEmpty()) return null
         val q = URLEncoder.encode(clean, "UTF-8")
@@ -793,7 +792,9 @@ class MainActivity : Activity() {
         conn.readTimeout = 40000
         conn.doOutput = true
 
-        val prompt = "Say in a warm, natural, friendly voice: $text"
+        val prompt = "Speak naturally like a real, warm, sweet young Bangladeshi woman. " +
+            "Use natural human intonation, gentle emotion, and clear pronunciation for both Bangla and English words. " +
+            "Do not sound robotic. Say only the following text: $text"
         val body = JSONObject()
             .put(
                 "contents",
@@ -864,11 +865,12 @@ class MainActivity : Activity() {
     private fun speakSystem(text: String) {
         val t = tts ?: return
         if (!ttsReady || text.isEmpty()) return
-        val res = t.setLanguage(Locale.forLanguageTag(langTag))
+        val hasBangla = text.any { it in '\u0980'..'\u09FF' }
+        val tag = if (hasBangla) "bn-BD" else "en-US"
+        val res = t.setLanguage(Locale.forLanguageTag(tag))
         if (res == TextToSpeech.LANG_MISSING_DATA || res == TextToSpeech.LANG_NOT_SUPPORTED) {
             append(
-                "(Ei phone-e ${langName()} voice nai. Settings > text-to-speech e " +
-                    "Google engine-e ${langName()} voice namao)\n\n"
+                "(Ei phone-e voice nai. Settings > text-to-speech e Google engine-e voice namao)\n\n"
             )
             return
         }
@@ -1270,7 +1272,7 @@ class MainActivity : Activity() {
     private fun tools(): JSONArray {
         val reply = JSONObject().put("type", "STRING").put(
             "description",
-            "User-er bhashay (Bangla mode-e khanti Bangla okkhore) ek-duo line-er confirmation. " +
+            "User-er bhashay (Bangla-y khanti Bangla okkhore, English-e natural English) ek-duo line-er confirmation. " +
                 "Jore pora hobe, tai emoji ba star dio na."
         )
         val label = JSONObject().put("type", "STRING")
