@@ -19,7 +19,6 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.ContactsContract
-import android.provider.MediaStore
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.telephony.TelephonyManager
@@ -73,10 +72,11 @@ object WishState {
 }
 
 // ---------------------------------------------------------------
-// Onno app-e auto search, auto lekha ar YouTube auto play
+// Onno app-e auto search, auto lekha ar auto play
 // ---------------------------------------------------------------
 object AutoTask {
-    @Volatile var mode = "" // "search", "type", "play_yt"
+    // "search", "type", "play_result", "search_and_play"
+    @Volatile var mode = ""
     @Volatile var targetPkg = ""
     @Volatile var text = ""
     @Volatile var until = 0L
@@ -101,13 +101,22 @@ object AutoTask {
         lastClick = 0L
     }
 
-    fun armPlayYt() {
-        mode = "play_yt"
-        targetPkg = "com.google.android.youtube"
-        text = ""
+    fun armPlayResult(pkg: String, query: String) {
+        mode = "play_result"
+        targetPkg = pkg
+        text = query
         val now = System.currentTimeMillis()
         readyAt = now + 2200L
-        until = now + 15_000L
+        until = now + 18_000L
+        lastClick = 0L
+    }
+
+    fun armSearchAndPlay(pkg: String, query: String) {
+        mode = "search_and_play"
+        targetPkg = pkg
+        text = query
+        readyAt = 0L
+        until = System.currentTimeMillis() + 25_000L
         lastClick = 0L
     }
 
@@ -129,6 +138,10 @@ object AppHelper {
 
     private val ALIASES = mapOf(
         "yt" to "youtube", "ইউটিউব" to "youtube",
+        "vanced" to "youtube vanced", "ভ্যান্সড" to "youtube vanced",
+        "youtube vance" to "youtube vanced", "ইউটিউব ভ্যান্স" to "youtube vanced",
+        "ইউটিউব ভ্যান্সড" to "youtube vanced", "revanced" to "revanced",
+        "playit" to "playit", "play it" to "playit", "প্লে ইট" to "playit", "প্লেইট" to "playit",
         "fb" to "facebook", "ফেসবুক" to "facebook",
         "wp" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp",
         "মেসেঞ্জার" to "messenger",
@@ -158,6 +171,11 @@ object AppHelper {
             if (s.isNotEmpty()) {
                 qs.add(s)
                 ALIASES[s]?.let { qs.add(it) }
+                // "youtube vance" -> "vanced" ba "vance" add kore
+                if (s.contains("vance")) {
+                    qs.add("vanced")
+                    qs.add("revanced")
+                }
             }
         }
         if (qs.isEmpty()) return null
@@ -172,11 +190,19 @@ object AppHelper {
             { l, q -> l == q },
             { l, q -> l.startsWith(q) },
             { l, q -> l.contains(q) },
-            { l, q -> q.contains(l) && l.length >= 3 }
+            { l, q -> q.contains(l) && l.length >= 4 }
         )
         for (test in steps) {
             for (q in qs) {
                 val hit = apps.firstOrNull { test(it.label.lowercase(Locale.ROOT), q) }
+                if (hit != null) return hit
+            }
+        }
+        // Package name diyeo check kore (jemon vanced/playit)
+        for (q in qs) {
+            val clean = q.replace(" ", "")
+            if (clean.length >= 4) {
+                val hit = apps.firstOrNull { it.pkg.lowercase(Locale.ROOT).contains(clean) }
                 if (hit != null) return hit
             }
         }
@@ -192,27 +218,16 @@ object AppHelper {
         return app
     }
 
+    private fun isYouTubeLike(app: AppInfo): Boolean {
+        val l = app.label.lowercase(Locale.ROOT)
+        val p = app.pkg.lowercase(Locale.ROOT)
+        return l.contains("youtube") || l.contains("vanced") || p.contains("youtube") || p.contains("vanced")
+    }
+
     fun searchInApp(ctx: Context, appNames: List<String>, query: String): String {
         val q = query.trim()
         val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
         armAppLockIfNeeded(ctx)
-
-        if (combined.contains("youtube") || combined.contains("yt") || combined.contains("ইউটিউব")) {
-            try {
-                val i = Intent(Intent.ACTION_SEARCH).apply {
-                    setPackage("com.google.android.youtube")
-                    putExtra(SearchManager.QUERY, q)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                ctx.startActivity(i)
-                return "YouTube-e search: $q"
-            } catch (e: Exception) {
-                val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q)))
-                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                ctx.startActivity(i)
-                return "YouTube-e search: $q"
-            }
-        }
 
         if (combined.isBlank() || combined.contains("google") || combined.contains("chrome") ||
             combined.contains("গুগল") || combined.contains("ক্রোম")
@@ -242,6 +257,18 @@ object AppHelper {
         }
 
         val app = findApp(ctx, appNames) ?: return ""
+        if (isYouTubeLike(app)) {
+            try {
+                val i = Intent(Intent.ACTION_SEARCH).apply {
+                    setPackage(app.pkg)
+                    putExtra(SearchManager.QUERY, q)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(i)
+                return "${app.label}-e search: $q"
+            } catch (e: Exception) {}
+        }
+
         val launch = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return ""
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         AutoTask.armSearch(app.pkg, q)
@@ -251,39 +278,51 @@ object AppHelper {
 
     fun playSong(ctx: Context, appNames: List<String>, song: String): String {
         val q = song.trim()
-        val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
-        val wantDefaultYt = combined.isBlank() || combined.contains("youtube") ||
-            combined.contains("yt") || combined.contains("ইউটিউব")
         armAppLockIfNeeded(ctx)
 
-        if (wantDefaultYt) {
-            try {
-                val i = Intent(Intent.ACTION_SEARCH).apply {
-                    setPackage("com.google.android.youtube")
-                    putExtra(SearchManager.QUERY, q)
-                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                }
-                AutoTask.armPlayYt()
-                ctx.startActivity(i)
-                return "YouTube play: $q"
-            } catch (e: Exception) {
-                return searchInApp(ctx, listOf("youtube"), q)
-            }
+        // Age exact app khuje ber kore (jemon YouTube Vanced, PLAYit, Spotify)
+        val app = if (appNames.any { it.isNotBlank() }) {
+            findApp(ctx, appNames)
+        } else {
+            findApp(ctx, listOf("youtube"))
         }
 
-        val pkg = findApp(ctx, appNames)?.pkg ?: "com.google.android.youtube"
-        try {
-            val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
-                setPackage(pkg)
-                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+        if (app == null) {
+            // Kono app na pele YouTube-e try kore
+            val i = Intent(Intent.ACTION_SEARCH).apply {
+                setPackage("com.google.android.youtube")
                 putExtra(SearchManager.QUERY, q)
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-            ctx.startActivity(i)
-            return "Play: $q"
-        } catch (e: Exception) {
-            return searchInApp(ctx, appNames, q)
+            AutoTask.armPlayResult("com.google.android.youtube", q)
+            try {
+                ctx.startActivity(i)
+                return "YouTube play: $q"
+            } catch (e: Exception) {
+                return ""
+            }
         }
+
+        // YouTube / YouTube Vanced / ReVanced hole direct search + auto click first video
+        if (isYouTubeLike(app)) {
+            try {
+                val i = Intent(Intent.ACTION_SEARCH).apply {
+                    setPackage(app.pkg)
+                    putExtra(SearchManager.QUERY, q)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                AutoTask.armPlayResult(app.pkg, q)
+                ctx.startActivity(i)
+                return "${app.label} play: $q"
+            } catch (e: Exception) {}
+        }
+
+        // PLAYit ba onno je kono app: app khule auto search + first result click
+        val launch = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return ""
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        AutoTask.armSearchAndPlay(app.pkg, q)
+        ctx.startActivity(launch)
+        return "${app.label} play: $q"
     }
 
     fun copyToClipboard(ctx: Context, text: String) {
@@ -350,7 +389,6 @@ object PinStore {
     }
 }
 
-// Wish pathano ba App Lock kholar shomoy PIN chapar onumoti dey
 object PinTyper {
     @Volatile
     var armedUntil = 0L
@@ -768,7 +806,7 @@ class WishActivity : Activity() {
 }
 
 // ---------------------------------------------------------------
-// Accessibility service: WhatsApp Send, PIN unlock, Auto Search, Auto Type & YT Play
+// Accessibility service: WhatsApp Send, PIN unlock, Auto Search, Auto Type & Auto Play
 // ---------------------------------------------------------------
 class WaSendService : AccessibilityService() {
 
@@ -803,7 +841,7 @@ class WaSendService : AccessibilityService() {
         }
     }
 
-    // ---------- onno app-e search, lekha ba YouTube first video click ----------
+    // ---------- onno app-e search, lekha ba auto play ----------
 
     private fun handleAutoTask() {
         val root = rootInActiveWindow ?: return
@@ -813,11 +851,12 @@ class WaSendService : AccessibilityService() {
         val mode = AutoTask.mode
         val text = AutoTask.text
 
-        if (mode == "play_yt") {
-            if (pkg != "com.google.android.youtube") return
+        if (mode == "play_result") {
+            if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             if (System.currentTimeMillis() < AutoTask.readyAt) return
-            val video = findFirstYtVideo(root, 0) ?: return
-            if (video.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+            // Age gaan-er naam mile emon item khuje, na pele prothom boro item click kore
+            val item = findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0) ?: return
+            if (item.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 AutoTask.clear()
             }
             return
@@ -832,12 +871,18 @@ class WaSendService : AccessibilityService() {
             return
         }
 
-        if (mode == "search") {
+        if (mode == "search" || mode == "search_and_play") {
             if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             val edit = findEditable(root, 0)
             if (edit != null) {
                 if (setNodeText(edit, text)) {
-                    AutoTask.clear()
+                    val wantPlay = (mode == "search_and_play")
+                    val target = AutoTask.targetPkg
+                    if (wantPlay) {
+                        AutoTask.armPlayResult(target, text)
+                    } else {
+                        AutoTask.clear()
+                    }
                     handler.postDelayed({
                         val r = rootInActiveWindow ?: return@postDelayed
                         findSearchButton(r, 0)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
@@ -856,21 +901,45 @@ class WaSendService : AccessibilityService() {
         }
     }
 
-    private fun findFirstYtVideo(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+    private fun findMatchingResult(n: AccessibilityNodeInfo?, query: String, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25 || query.isBlank()) return null
+        val q = query.trim().lowercase(Locale.ROOT)
+        val firstWord = q.split(" ").firstOrNull { it.length >= 3 } ?: q
+        if (!n.isEditable && n.isVisibleToUser) {
+            val rect = Rect()
+            n.getBoundsInScreen(rect)
+            if (rect.top > 240) {
+                val t = (n.text?.toString() ?: "").lowercase(Locale.ROOT)
+                val d = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
+                if ((t.contains(firstWord) || d.contains(firstWord)) &&
+                    !d.contains("ad ") && !d.contains("sponsored")
+                ) {
+                    val c = clickable(n)
+                    if (c != null && !c.isEditable) return c
+                }
+            }
+        }
+        for (i in 0 until n.childCount) {
+            val r = findMatchingResult(n.getChild(i), query, depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findFirstBigResult(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
         if (n == null || depth > 25) return null
         if (n.isClickable && n.isVisibleToUser && !n.isEditable) {
             val rect = Rect()
             n.getBoundsInScreen(rect)
             val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
-            // Top bar ar chhoto chip/button bad diye boro video card khuje
-            if (rect.top > 280 && rect.height() > 220 && rect.width() > 300) {
+            if (rect.top > 260 && rect.height() > 120 && rect.width() > 300) {
                 if (!desc.contains("ad ") && !desc.contains("sponsored")) {
                     return n
                 }
             }
         }
         for (i in 0 until n.childCount) {
-            val r = findFirstYtVideo(n.getChild(i), depth + 1)
+            val r = findFirstBigResult(n.getChild(i), depth + 1)
             if (r != null) return r
         }
         return null
