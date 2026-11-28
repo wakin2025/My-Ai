@@ -76,7 +76,9 @@ class MainActivity : Activity() {
             "message-er lekha tumi nijei likho (user-er bhashay, chhoto, shundor, emoji dewa jay). " +
             "Contact-er naam Bangla-e bolle name_alt-e English banan, English-e bolle Bangla banan dao. " +
             "User 'X minute por' ba 'ekhon theke' bolle schedule_whatsapp-e shudhu in_minutes dao " +
-            "(hour/minute dio na). 'ratri 9 tay'-er moto spasto shomoy bolle hour ar minute dao."
+            "(hour/minute dio na). 'ratri 9 tay'-er moto spasto shomoy bolle hour ar minute dao. " +
+            "User kono app khulte bolle open_app, kono app-e kichu search korte bolle search_in_app, " +
+            "kono gaan ba video play korte bolle play_song, ar kono jaygay kichu likhte bolle type_text function call koro."
     }
 
     private lateinit var chatView: TextView
@@ -746,7 +748,6 @@ class MainActivity : Activity() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
 
-        // "kothai aso" bolle phone silent thakleo full volume kore uttor dibe
         val lower = text.lowercase(Locale.ROOT)
         val findKeywords = listOf("কোথায়", "কোথায়", "কই", "kothai", "kothay", "koi", "where are you")
         if (findKeywords.any { lower.contains(it) }) {
@@ -936,6 +937,62 @@ class MainActivity : Activity() {
                 val n = Wishes.cancelAll(this)
                 Pair(reply, "$n ta wish mushe geche")
             }
+            "open_app" -> {
+                val appName = a.optString("app_name", "")
+                val alt = a.optString("app_name_alt", "")
+                val opened = AppHelper.openApp(this, listOf(appName, alt))
+                if (opened != null) {
+                    wakeMode = false
+                    Pair(reply, "Opened: ${opened.label}")
+                } else {
+                    Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
+                }
+            }
+            "search_in_app" -> {
+                val appName = a.optString("app_name", "")
+                val alt = a.optString("app_name_alt", "")
+                val query = a.optString("query", "").trim()
+                if (query.isEmpty()) {
+                    Pair("কী সার্চ করতে হবে বুঝতে পারিনি।", "")
+                } else {
+                    val note = AppHelper.searchInApp(this, listOf(appName, alt), query)
+                    if (note.isNotEmpty()) {
+                        wakeMode = false
+                        Pair(reply, note)
+                    } else {
+                        Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
+                    }
+                }
+            }
+            "play_song" -> {
+                val appName = a.optString("app_name", "")
+                val alt = a.optString("app_name_alt", "")
+                val song = a.optString("song", "").trim()
+                if (song.isEmpty()) {
+                    Pair("কোন গান চালাতে হবে বুঝতে পারিনি।", "")
+                } else {
+                    val note = AppHelper.playSong(this, listOf(appName, alt), song)
+                    wakeMode = false
+                    Pair(reply, note)
+                }
+            }
+            "type_text" -> {
+                val txt = a.optString("text", "").trim()
+                if (txt.isEmpty()) {
+                    Pair("কী লিখতে হবে বুঝতে পারিনি।", "")
+                } else {
+                    AppHelper.copyToClipboard(this, txt)
+                    if (!isAccessibilityOn()) {
+                        runOnUiThread { startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)) }
+                        Pair("লেখাটা কপি করেছি, তবে অটো লিখতে অ্যাক্সেসিবিলিটি চালু করো।", "Copied: $txt")
+                    } else {
+                        AutoTask.armType(txt)
+                        wakeMode = false
+                        runOnUiThread { handler.postDelayed({ moveTaskToBack(true) }, 400) }
+                        Pair(reply, "Typing: $txt")
+                    }
+                }
+            }
             else -> Pair(reply, "")
         }
     }
@@ -1053,6 +1110,7 @@ class MainActivity : Activity() {
                     JSONObject().put("reply", reply), listOf("reply")
                 )
             )
+
         val nameP = JSONObject().put("type", "STRING")
             .put("description", "Contact-er naam, user jevabe bolechhe")
         val nameAlt = JSONObject().put("type", "STRING")
@@ -1082,6 +1140,49 @@ class MainActivity : Activity() {
                 JSONObject().put("reply", reply), listOf("reply")
             )
         )
+
+        val appP = JSONObject().put("type", "STRING")
+            .put("description", "App-er naam, jemon YouTube, Daraz, Facebook")
+        val appAltP = JSONObject().put("type", "STRING")
+            .put("description", "App-er English naam (jodi user Bangla-y bole)")
+        val queryP = JSONObject().put("type", "STRING")
+            .put("description", "Ja search korte hobe")
+        val songP = JSONObject().put("type", "STRING")
+            .put("description", "Jei gaan ba video play korte hobe tar naam")
+        val textP = JSONObject().put("type", "STRING")
+            .put("description", "Jei lekha-ta screen-er box-e type korte hobe")
+
+        decls.put(
+            fn(
+                "open_app", "Phone-er je kono app khole",
+                JSONObject().put("app_name", appP).put("app_name_alt", appAltP).put("reply", reply),
+                listOf("app_name", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "search_in_app", "Kono app-e (jemon YouTube, Google, Daraz) kichu search kore",
+                JSONObject().put("app_name", appP).put("app_name_alt", appAltP)
+                    .put("query", queryP).put("reply", reply),
+                listOf("query", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "play_song", "YouTube ba onno app-e kono gaan ba video play kore",
+                JSONObject().put("app_name", appP).put("app_name_alt", appAltP)
+                    .put("song", songP).put("reply", reply),
+                listOf("song", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "type_text", "Ager app-er text box-e kono kichu auto likhe dey",
+                JSONObject().put("text", textP).put("reply", reply),
+                listOf("text", "reply")
+            )
+        )
+
         return JSONArray().put(JSONObject().put("functionDeclarations", decls))
     }
 }
