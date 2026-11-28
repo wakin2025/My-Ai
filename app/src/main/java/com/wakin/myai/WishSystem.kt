@@ -5,7 +5,10 @@ import android.app.Activity
 import android.app.AlarmManager
 import android.app.KeyguardManager
 import android.app.PendingIntent
+import android.app.SearchManager
 import android.content.BroadcastReceiver
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
@@ -15,6 +18,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
 import android.provider.ContactsContract
+import android.provider.MediaStore
 import android.security.keystore.KeyGenParameterSpec
 import android.security.keystore.KeyProperties
 import android.telephony.TelephonyManager
@@ -64,6 +68,204 @@ object WishState {
     fun clear() {
         pendingUntil = 0L
         lockAfter = false
+    }
+}
+
+// ---------------------------------------------------------------
+// Onno app-e auto search ba auto lekha (Accessibility diye)
+// ---------------------------------------------------------------
+object AutoTask {
+    @Volatile var mode = "" // "search" ba "type"
+    @Volatile var targetPkg = ""
+    @Volatile var text = ""
+    @Volatile var until = 0L
+    @Volatile var lastClick = 0L
+
+    fun armSearch(pkg: String, query: String) {
+        mode = "search"
+        targetPkg = pkg
+        text = query
+        until = System.currentTimeMillis() + 18_000L
+        lastClick = 0L
+    }
+
+    fun armType(t: String) {
+        mode = "type"
+        targetPkg = ""
+        text = t
+        until = System.currentTimeMillis() + 15_000L
+        lastClick = 0L
+    }
+
+    fun isActive() = mode.isNotEmpty() && System.currentTimeMillis() < until
+
+    fun clear() {
+        mode = ""
+        targetPkg = ""
+        text = ""
+        until = 0L
+    }
+}
+
+// ---------------------------------------------------------------
+// Phone-er app khoja, khola, search kora ar gaan play kora
+// ---------------------------------------------------------------
+object AppHelper {
+    class AppInfo(val label: String, val pkg: String)
+
+    private val ALIASES = mapOf(
+        "yt" to "youtube", "ইউটিউব" to "youtube",
+        "fb" to "facebook", "ফেসবুক" to "facebook",
+        "wp" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp",
+        "মেসেঞ্জার" to "messenger",
+        "insta" to "instagram", "ইনস্টাগ্রাম" to "instagram",
+        "ক্রোম" to "chrome",
+        "প্লে স্টোর" to "play store", "playstore" to "play store",
+        "সেটিংস" to "settings",
+        "ক্যামেরা" to "camera",
+        "গ্যালারি" to "gallery",
+        "ক্যালকুলেটর" to "calculator",
+        "স্পটিফাই" to "spotify",
+        "টিকটক" to "tiktok",
+        "টেলিগ্রাম" to "telegram",
+        "দারাজ" to "daraz",
+        "ম্যাপ" to "maps", "ম্যাপস" to "maps",
+        "গুগল" to "google"
+    )
+
+    fun findApp(ctx: Context, rawNames: List<String>): AppInfo? {
+        val qs = ArrayList<String>()
+        for (r in rawNames) {
+            val s = r.trim().lowercase(Locale.ROOT)
+            if (s.isNotEmpty()) {
+                qs.add(s)
+                ALIASES[s]?.let { qs.add(it) }
+            }
+        }
+        if (qs.isEmpty()) return null
+
+        val pm = ctx.packageManager
+        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+        val apps = pm.queryIntentActivities(intent, 0).map { ri ->
+            AppInfo(ri.loadLabel(pm).toString(), ri.activityInfo.packageName)
+        }
+
+        val steps = listOf<(String, String) -> Boolean>(
+            { l, q -> l == q },
+            { l, q -> l.startsWith(q) },
+            { l, q -> l.contains(q) },
+            { l, q -> q.contains(l) && l.length >= 3 }
+        )
+        for (test in steps) {
+            for (q in qs) {
+                val hit = apps.firstOrNull { test(it.label.lowercase(Locale.ROOT), q) }
+                if (hit != null) return hit
+            }
+        }
+        return null
+    }
+
+    fun openApp(ctx: Context, names: List<String>): AppInfo? {
+        val app = findApp(ctx, names) ?: return null
+        val i = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return null
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        ctx.startActivity(i)
+        return app
+    }
+
+    fun searchInApp(ctx: Context, appNames: List<String>, query: String): String {
+        val q = query.trim()
+        val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
+
+        // YouTube direct search
+        if (combined.contains("youtube") || combined.contains("yt") || combined.contains("ইউটিউব")) {
+            try {
+                val i = Intent(Intent.ACTION_SEARCH).apply {
+                    setPackage("com.google.android.youtube")
+                    putExtra(SearchManager.QUERY, q)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                ctx.startActivity(i)
+                return "YouTube-e search: $q"
+            } catch (e: Exception) {
+                val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.youtube.com/results?search_query=" + Uri.encode(q)))
+                i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                ctx.startActivity(i)
+                return "YouTube-e search: $q"
+            }
+        }
+
+        // Google / Chrome / kono app na bolle
+        if (combined.isBlank() || combined.contains("google") || combined.contains("chrome") ||
+            combined.contains("গুগল") || combined.contains("ক্রোম")
+        ) {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("https://www.google.com/search?q=" + Uri.encode(q)))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            ctx.startActivity(i)
+            return "Google-e search: $q"
+        }
+
+        // Play Store
+        if (combined.contains("play store") || combined.contains("playstore") || combined.contains("প্লে স্টোর")) {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=" + Uri.encode(q)))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                ctx.startActivity(i)
+                return "Play Store-e search: $q"
+            } catch (e: Exception) {}
+        }
+
+        // Maps
+        if (combined.contains("map") || combined.contains("ম্যাপ")) {
+            val i = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(q)))
+            i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            try {
+                ctx.startActivity(i)
+                return "Maps-e search: $q"
+            } catch (e: Exception) {}
+        }
+
+        // Onno je kono app: app khule Accessibility diye search box-e likhe dibe
+        val app = findApp(ctx, appNames) ?: return ""
+        val launch = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return ""
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        AutoTask.armSearch(app.pkg, q)
+        ctx.startActivity(launch)
+        return "${app.label}-e search: $q"
+    }
+
+    fun playSong(ctx: Context, appNames: List<String>, song: String): String {
+        val q = song.trim()
+        val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
+        val wantDefaultYt = combined.isBlank() || combined.contains("youtube") ||
+            combined.contains("yt") || combined.contains("ইউটিউব")
+
+        val pkg = if (wantDefaultYt) {
+            "com.google.android.youtube"
+        } else {
+            findApp(ctx, appNames)?.pkg ?: "com.google.android.youtube"
+        }
+
+        try {
+            val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
+                setPackage(pkg)
+                putExtra(MediaStore.EXTRA_MEDIA_FOCUS, "vnd.android.cursor.item/*")
+                putExtra(SearchManager.QUERY, q)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            ctx.startActivity(i)
+            return "Play: $q"
+        } catch (e: Exception) {
+            // Fallback: YouTube search ba app search
+            return searchInApp(ctx, if (wantDefaultYt) listOf("youtube") else appNames, q)
+        }
+    }
+
+    fun copyToClipboard(ctx: Context, text: String) {
+        try {
+            val cm = ctx.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("MyAI", text))
+        } catch (e: Exception) {}
     }
 }
 
@@ -214,7 +416,6 @@ object Wishes {
         return time
     }
 
-    // Shomoy hole wish-ta nie talika theke shoriye fele
     fun take(ctx: Context, id: Int): JSONObject? {
         val arr = load(ctx)
         val out = JSONArray()
@@ -277,8 +478,6 @@ object Wishes {
 // ---------------------------------------------------------------
 object WaContacts {
     class Match(val name: String, val number: String)
-
-    // match: ekjon paoa gele; ambiguous: ekadhik jon mile gele tader naam
     class Found(val match: Match?, val ambiguous: List<String>)
 
     private const val WA_MIME = "vnd.android.cursor.item/vnd.com.whatsapp.profile"
@@ -291,7 +490,6 @@ object WaContacts {
         val ph = ArrayList<Match>()
         load(ctx, wa, ph)
 
-        // Age WhatsApp contact-er modhye khuje, na pele phone-er contact-e
         for (list in listOf(wa, ph)) {
             val r = pick(list, qs)
             if (r.match != null || r.ambiguous.isNotEmpty()) return r
@@ -299,7 +497,6 @@ object WaContacts {
         return Found(null, emptyList())
     }
 
-    // 1) puro naam mile 2) naam-er vitore thake 3) kachakachi (1-2 okkhor bhul, jemon Ashraf/Ashruf)
     private fun pick(list: List<Match>, qs: List<String>): Found {
         val steps = listOf<(String, String) -> Boolean>(
             { n, q -> n == q },
@@ -342,7 +539,6 @@ object WaContacts {
     }
 
     private fun load(ctx: Context, wa: MutableList<Match>, ph: MutableList<Match>) {
-        // WhatsApp nijer contact-row-te puro international number rakhe
         ctx.contentResolver.query(
             ContactsContract.Data.CONTENT_URI,
             arrayOf(ContactsContract.Data.DISPLAY_NAME, ContactsContract.Data.DATA1),
@@ -422,7 +618,6 @@ class WishReceiver : BroadcastReceiver() {
     }
 }
 
-// Phone restart hole wish gulo abar boshiye deya
 class WishBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action == Intent.ACTION_BOOT_COMPLETED) {
@@ -463,7 +658,6 @@ class WishActivity : Activity() {
         }
     }
 
-    // Lock thakle PIN diye khole, tarpor WhatsApp-e pathay
     private fun unlockThenSend(name: String, number: String, message: String) {
         val km = getSystemService(Context.KEYGUARD_SERVICE) as KeyguardManager
         if (!km.isKeyguardLocked) {
@@ -543,7 +737,7 @@ class WishActivity : Activity() {
 }
 
 // ---------------------------------------------------------------
-// WhatsApp-er Send button-e chap dey (Accessibility service)
+// Accessibility service: WhatsApp Send, PIN unlock, Auto Search & Auto Type
 // ---------------------------------------------------------------
 class WaSendService : AccessibilityService() {
 
@@ -554,6 +748,9 @@ class WaSendService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (PinTyper.isArmed() && !PinTyper.typing) {
             tryTypePin()
+        }
+        if (AutoTask.isActive()) {
+            handleAutoTask()
         }
         if (!WishState.isPending()) return
         val root = rootInActiveWindow ?: return
@@ -573,6 +770,85 @@ class WaSendService : AccessibilityService() {
                 }
             }, 2500)
         }
+    }
+
+    // ---------- onno app-e search ba lekha ----------
+
+    private fun handleAutoTask() {
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString() ?: ""
+        if (pkg.isEmpty() || pkg == packageName) return
+
+        val mode = AutoTask.mode
+        val text = AutoTask.text
+        if (mode == "type") {
+            val edit = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                ?.takeIf { it.isEditable } ?: findEditable(root, 0) ?: return
+            if (setNodeText(edit, text)) {
+                AutoTask.clear()
+            }
+            return
+        }
+
+        if (mode == "search") {
+            if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
+            val edit = findEditable(root, 0)
+            if (edit != null) {
+                if (setNodeText(edit, text)) {
+                    AutoTask.clear()
+                    handler.postDelayed({
+                        val r = rootInActiveWindow ?: return@postDelayed
+                        findSearchButton(r, 0)?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    }, 500)
+                }
+                return
+            }
+            val now = System.currentTimeMillis()
+            if (now - AutoTask.lastClick > 1500L) {
+                val btn = findSearchButton(root, 0)
+                if (btn != null) {
+                    AutoTask.lastClick = now
+                    btn.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                }
+            }
+        }
+    }
+
+    private fun setNodeText(node: AccessibilityNodeInfo, text: String): Boolean {
+        node.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+        node.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        val args = Bundle().apply {
+            putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text)
+        }
+        return node.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
+    }
+
+    private fun findEditable(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        if (n.isEditable && n.isVisibleToUser) return n
+        for (i in 0 until n.childCount) {
+            val r = findEditable(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
+    private fun findSearchButton(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
+        val txt = (n.text?.toString() ?: "").lowercase(Locale.ROOT)
+        val id = (n.viewIdResourceName ?: "").lowercase(Locale.ROOT)
+        val isSearch = desc.contains("search") || desc.contains("খুঁজুন") ||
+            txt == "search" || txt.contains("search") || id.contains("search")
+        if (isSearch && !n.isEditable && n.isVisibleToUser) {
+            val c = clickable(n)
+            if (c != null) return c
+        }
+        for (i in 0 until n.childCount) {
+            val r = findSearchButton(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
     }
 
     // ---------- lock screen-er PIN pad-e number chapa ----------
@@ -634,7 +910,6 @@ class WaSendService : AccessibilityService() {
         return null
     }
 
-    // PIN pad na pele ki ki dekhechi, sheta likhe rakhi (shomossha dhorar jonno)
     private fun describe(root: AccessibilityNodeInfo): String {
         val out = ArrayList<String>()
         fun walk(n: AccessibilityNodeInfo?, depth: Int) {
