@@ -69,6 +69,7 @@ object AutoTask {
     @Volatile var until = 0L
     @Volatile var readyAt = 0L
     @Volatile var lastClick = 0L
+    @Volatile var switchedMusicTab = false
 
     fun armSearch(pkg: String, query: String) {
         mode = "search"
@@ -77,6 +78,7 @@ object AutoTask {
         readyAt = 0L
         until = System.currentTimeMillis() + 18_000L
         lastClick = 0L
+        switchedMusicTab = false
     }
 
     fun armType(t: String) {
@@ -86,6 +88,7 @@ object AutoTask {
         readyAt = 0L
         until = System.currentTimeMillis() + 15_000L
         lastClick = 0L
+        switchedMusicTab = false
     }
 
     fun armPlayResult(pkg: String, query: String) {
@@ -93,9 +96,10 @@ object AutoTask {
         targetPkg = pkg
         text = query
         val now = System.currentTimeMillis()
-        readyAt = now + 2600L
+        readyAt = now + 2000L
         until = now + 22_000L
         lastClick = 0L
+        switchedMusicTab = false
     }
 
     fun armSearchAndPlay(pkg: String, query: String) {
@@ -105,6 +109,7 @@ object AutoTask {
         readyAt = 0L
         until = System.currentTimeMillis() + 25_000L
         lastClick = 0L
+        switchedMusicTab = false
     }
 
     fun isActive() = mode.isNotEmpty() && System.currentTimeMillis() < until
@@ -114,6 +119,7 @@ object AutoTask {
         targetPkg = ""
         text = ""
         until = 0L
+        switchedMusicTab = false
     }
 }
 
@@ -125,7 +131,8 @@ object AppHelper {
         "vanced" to "youtube vanced", "ভ্যান্সড" to "youtube vanced",
         "youtube vance" to "youtube vanced", "ইউটিউব ভ্যান্স" to "youtube vanced",
         "ইউটিউব ভ্যান্সড" to "youtube vanced", "revanced" to "revanced",
-        "playit" to "playit", "play it" to "playit", "প্লে ইট" to "playit", "প্লেইট" to "playit",
+        "playit" to "playit", "play it" to "playit", "প্লে ইট" to "playit",
+        "প্লেইট" to "playit", "প্লেট" to "playit", "plate" to "playit",
         "fb" to "facebook", "ফেসবুক" to "facebook",
         "wp" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp", "হোয়াটসঅ্যাপ" to "whatsapp",
         "মেসেঞ্জার" to "messenger",
@@ -857,7 +864,34 @@ class WaSendService : AccessibilityService() {
         if (mode == "play_result") {
             if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             if (System.currentTimeMillis() < AutoTask.readyAt) return
-            val item = findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0)
+
+            // YouTube popup ("Not Now") thakle age bondho kore
+            val notNow = findExactButton(root, listOf("not now", "dismiss", "skip"), 0)
+            if (notNow != null) {
+                notNow.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                AutoTask.readyAt = System.currentTimeMillis() + 600L
+                return
+            }
+
+            // PLAYit-e "No result found" dekhale MY MUSIC tab-e click kore
+            val screenTxt = collectText(root, 0).lowercase(Locale.ROOT)
+            if (!AutoTask.switchedMusicTab && screenTxt.contains("no result found")) {
+                val musicTab = findExactButton(root, listOf("my music", "music"), 0)
+                if (musicTab != null) {
+                    AutoTask.switchedMusicTab = true
+                    musicTab.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                    AutoTask.readyAt = System.currentTimeMillis() + 1000L
+                    return
+                }
+            }
+
+            // YouTube / Vanced hole shorashori 1st video click kore
+            val isYt = pkg.contains("youtube") || pkg.contains("vanced")
+            val item = if (isYt) {
+                findFirstBigResult(root, 0) ?: findMatchingResult(root, text, 0)
+            } else {
+                findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0)
+            }
             if (item != null && item.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 AutoTask.clear()
                 return
@@ -905,6 +939,21 @@ class WaSendService : AccessibilityService() {
         }
     }
 
+    private fun findExactButton(n: AccessibilityNodeInfo?, labels: List<String>, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        val t = (n.text?.toString() ?: "").trim().lowercase(Locale.ROOT)
+        val d = (n.contentDescription?.toString() ?: "").trim().lowercase(Locale.ROOT)
+        if ((t in labels || d in labels) && n.isVisibleToUser) {
+            val c = clickable(n)
+            if (c != null) return c
+        }
+        for (i in 0 until n.childCount) {
+            val r = findExactButton(n.getChild(i), labels, depth + 1)
+            if (r != null) return r
+        }
+        return null
+    }
+
     private fun findPlayButtonInScreen(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
         if (n == null || depth > 25) return null
         val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
@@ -927,7 +976,7 @@ class WaSendService : AccessibilityService() {
         if (!n.isEditable && n.isVisibleToUser) {
             val rect = Rect()
             n.getBoundsInScreen(rect)
-            if (rect.top > 340 && rect.bottom < 1750) {
+            if (rect.top > 240 && rect.bottom < 1750) {
                 val t = (n.text?.toString() ?: "").lowercase(Locale.ROOT)
                 val d = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
                 if ((t.contains(firstWord) || d.contains(firstWord)) &&
@@ -951,7 +1000,7 @@ class WaSendService : AccessibilityService() {
             val rect = Rect()
             n.getBoundsInScreen(rect)
             val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
-            if (rect.top > 340 && rect.bottom < 1750 && rect.height() > 130 && rect.width() > 320) {
+            if (rect.top > 180 && rect.bottom < 1750 && rect.height() > 130 && rect.width() > 320) {
                 if (!desc.contains("ad ") && !desc.contains("sponsored")) {
                     return n
                 }
