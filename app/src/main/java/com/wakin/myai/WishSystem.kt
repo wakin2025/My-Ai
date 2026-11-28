@@ -28,6 +28,7 @@ import android.view.WindowManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.TextView
+import android.widget.Toast
 import org.json.JSONArray
 import org.json.JSONObject
 import java.security.KeyStore
@@ -40,21 +41,11 @@ import javax.crypto.KeyGenerator
 import javax.crypto.SecretKey
 import javax.crypto.spec.GCMParameterSpec
 
-// ---------------------------------------------------------------
-// Ekhon kon wish pathano cholche, sheta service-ke janay
-// ---------------------------------------------------------------
 object WishState {
-    @Volatile
-    var pendingUntil = 0L
-
-    @Volatile
-    var sent = false
-
-    @Volatile
-    var name = ""
-
-    @Volatile
-    var lockAfter = false
+    @Volatile var pendingUntil = 0L
+    @Volatile var sent = false
+    @Volatile var name = ""
+    @Volatile var lockAfter = false
 
     fun arm(n: String, shouldLock: Boolean) {
         name = n
@@ -71,11 +62,7 @@ object WishState {
     }
 }
 
-// ---------------------------------------------------------------
-// Onno app-e auto search, auto lekha ar auto play
-// ---------------------------------------------------------------
 object AutoTask {
-    // "search", "type", "play_result", "search_and_play"
     @Volatile var mode = ""
     @Volatile var targetPkg = ""
     @Volatile var text = ""
@@ -130,9 +117,6 @@ object AutoTask {
     }
 }
 
-// ---------------------------------------------------------------
-// Phone-er app khoja, khola, search kora ar gaan play kora
-// ---------------------------------------------------------------
 object AppHelper {
     class AppInfo(val label: String, val pkg: String)
 
@@ -171,7 +155,6 @@ object AppHelper {
             if (s.isNotEmpty()) {
                 qs.add(s)
                 ALIASES[s]?.let { qs.add(it) }
-                // "youtube vance" -> "vanced" ba "vance" add kore
                 if (s.contains("vance")) {
                     qs.add("vanced")
                     qs.add("revanced")
@@ -198,7 +181,6 @@ object AppHelper {
                 if (hit != null) return hit
             }
         }
-        // Package name diyeo check kore (jemon vanced/playit)
         for (q in qs) {
             val clean = q.replace(" ", "")
             if (clean.length >= 4) {
@@ -280,7 +262,6 @@ object AppHelper {
         val q = song.trim()
         armAppLockIfNeeded(ctx)
 
-        // Age exact app khuje ber kore (jemon YouTube Vanced, PLAYit, Spotify)
         val app = if (appNames.any { it.isNotBlank() }) {
             findApp(ctx, appNames)
         } else {
@@ -288,7 +269,6 @@ object AppHelper {
         }
 
         if (app == null) {
-            // Kono app na pele YouTube-e try kore
             val i = Intent(Intent.ACTION_SEARCH).apply {
                 setPackage("com.google.android.youtube")
                 putExtra(SearchManager.QUERY, q)
@@ -303,7 +283,6 @@ object AppHelper {
             }
         }
 
-        // YouTube / YouTube Vanced / ReVanced hole direct search + auto click first video
         if (isYouTubeLike(app)) {
             try {
                 val i = Intent(Intent.ACTION_SEARCH).apply {
@@ -317,7 +296,6 @@ object AppHelper {
             } catch (e: Exception) {}
         }
 
-        // PLAYit ba onno je kono app: app khule auto search + first result click
         val launch = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return ""
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         AutoTask.armSearchAndPlay(app.pkg, q)
@@ -333,9 +311,6 @@ object AppHelper {
     }
 }
 
-// ---------------------------------------------------------------
-// Lock-er PIN phone-er Keystore diye encrypt kore rakhe
-// ---------------------------------------------------------------
 object PinStore {
     private const val PREFS = "myai_pin"
     private const val KEY = "blob"
@@ -390,14 +365,9 @@ object PinStore {
 }
 
 object PinTyper {
-    @Volatile
-    var armedUntil = 0L
-
-    @Volatile
-    var typing = false
-
-    @Volatile
-    var seen = ""
+    @Volatile var armedUntil = 0L
+    @Volatile var typing = false
+    @Volatile var seen = ""
 
     fun arm() {
         armedUntil = System.currentTimeMillis() + 40_000L
@@ -419,9 +389,6 @@ object PinTyper {
     }
 }
 
-// ---------------------------------------------------------------
-// Schedule kora wish-er talika
-// ---------------------------------------------------------------
 object Wishes {
     private const val PREFS = "myai_wishes"
     private const val KEY = "list"
@@ -429,11 +396,7 @@ object Wishes {
 
     private fun load(ctx: Context): JSONArray {
         val s = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, "[]") ?: "[]"
-        return try {
-            JSONArray(s)
-        } catch (e: Exception) {
-            JSONArray()
-        }
+        return try { JSONArray(s) } catch (e: Exception) { JSONArray() }
     }
 
     private fun save(ctx: Context, arr: JSONArray) {
@@ -542,9 +505,6 @@ object Wishes {
     }
 }
 
-// ---------------------------------------------------------------
-// Contact-er naam theke WhatsApp number khuje ber kora
-// ---------------------------------------------------------------
 object WaContacts {
     class Match(val name: String, val number: String)
     class Found(val match: Match?, val ambiguous: List<String>)
@@ -662,9 +622,6 @@ object WaContacts {
     }
 }
 
-// ---------------------------------------------------------------
-// Wish-er shomoy hole Android eta ke daak dey
-// ---------------------------------------------------------------
 class WishReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val w = Wishes.take(context, intent.getIntExtra("id", -1)) ?: return
@@ -695,9 +652,6 @@ class WishBootReceiver : BroadcastReceiver() {
     }
 }
 
-// ---------------------------------------------------------------
-// Screen jagay, WhatsApp-e chat khole message boshay
-// ---------------------------------------------------------------
 class WishActivity : Activity() {
 
     private val handler = Handler(Looper.getMainLooper())
@@ -805,16 +759,17 @@ class WishActivity : Activity() {
     }
 }
 
-// ---------------------------------------------------------------
-// Accessibility service: WhatsApp Send, PIN unlock, Auto Search, Auto Type & Auto Play
-// ---------------------------------------------------------------
 class WaSendService : AccessibilityService() {
 
     private val handler = Handler(Looper.getMainLooper())
+    private var lastBlockToast = 0L
 
     override fun onInterrupt() {}
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (UninstallLock.isLocked(this)) {
+            checkUninstallBlock()
+        }
         if (PinTyper.isArmed() && !PinTyper.typing) {
             tryTypePin()
         }
@@ -841,6 +796,43 @@ class WaSendService : AccessibilityService() {
         }
     }
 
+    // ---------- Uninstall Lock protection ----------
+
+    private fun checkUninstallBlock() {
+        val root = rootInActiveWindow ?: return
+        val pkg = root.packageName?.toString()?.lowercase(Locale.ROOT) ?: return
+        if (pkg == packageName) return
+        val isGuardPkg = pkg.contains("packageinstaller") || pkg.contains("settings") || pkg.contains("launcher")
+        if (!isGuardPkg) return
+
+        val screenText = collectText(root, 0).lowercase(Locale.ROOT)
+        val hasMyAi = screenText.contains("myai")
+        val hasDanger = screenText.contains("uninstall") || screenText.contains("আনইনস্টল") ||
+            screenText.contains("force stop") || screenText.contains("delete")
+        if (hasMyAi && hasDanger) {
+            performGlobalAction(GLOBAL_ACTION_HOME)
+            val now = System.currentTimeMillis()
+            if (now - lastBlockToast > 2500L) {
+                lastBlockToast = now
+                handler.post {
+                    Toast.makeText(this, "Uninstall Locked! Age MyAI theke password diye OFF koro.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+    }
+
+    private fun collectText(n: AccessibilityNodeInfo?, depth: Int): String {
+        if (n == null || depth > 14) return ""
+        val sb = StringBuilder()
+        n.text?.let { sb.append(it).append(" ") }
+        n.contentDescription?.let { sb.append(it).append(" ") }
+        for (i in 0 until n.childCount) {
+            sb.append(collectText(n.getChild(i), depth + 1))
+            if (sb.length > 600) break
+        }
+        return sb.toString()
+    }
+
     // ---------- onno app-e search, lekha ba auto play ----------
 
     private fun handleAutoTask() {
@@ -854,7 +846,6 @@ class WaSendService : AccessibilityService() {
         if (mode == "play_result") {
             if (AutoTask.targetPkg.isNotEmpty() && pkg != AutoTask.targetPkg) return
             if (System.currentTimeMillis() < AutoTask.readyAt) return
-            // Age gaan-er naam mile emon item khuje, na pele prothom boro item click kore
             val item = findMatchingResult(root, text, 0) ?: findFirstBigResult(root, 0) ?: return
             if (item.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
                 AutoTask.clear()
@@ -981,8 +972,6 @@ class WaSendService : AccessibilityService() {
         }
         return null
     }
-
-    // ---------- lock screen ba app lock-er PIN pad-e number chapa ----------
 
     private fun tryTypePin() {
         val pin = PinStore.get(this) ?: return
