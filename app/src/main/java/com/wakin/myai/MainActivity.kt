@@ -114,7 +114,8 @@ class MainActivity : Activity() {
     private val handler = Handler(Looper.getMainLooper())
     @Volatile private var wakeMode = false
     private lateinit var wakeBtn: Button
-    private lateinit var pinBtn: Button
+    private lateinit var screenPinBtn: Button
+    private lateinit var appPinBtn: Button
     private lateinit var myVoiceBtn: Button
     private lateinit var lockBtn: Button
     private lateinit var voiceBtn: Button
@@ -153,7 +154,8 @@ class MainActivity : Activity() {
     override fun onStart() {
         super.onStart()
         wakeBtn.text = wakeLabel()
-        pinBtn.text = pinLabel()
+        screenPinBtn.text = screenPinLabel()
+        appPinBtn.text = appPinLabel()
         myVoiceBtn.text = myVoiceLabel()
         lockBtn.text = lockLabel()
         WakeService.instance?.pauseListening()
@@ -164,7 +166,9 @@ class MainActivity : Activity() {
         WakeService.instance?.resumeListening()
     }
 
-    private fun pinLabel() = if (PinStore.has(this)) "PIN: SET" else "PIN: NO"
+    private fun screenPinLabel() = if (PinStore.hasScreen(this)) "ScrPIN: SET" else "ScrPIN: NO"
+
+    private fun appPinLabel() = if (PinStore.hasApp(this)) "AppPIN: SET" else "AppPIN: NO"
 
     private fun myVoiceLabel() = if (SpeakerStore.isEnabled(this)) "MyVoice: ON" else "MyVoice: OFF"
 
@@ -341,34 +345,61 @@ class MainActivity : Activity() {
         )
     }
 
-    private fun askPin() {
+    private fun askScreenPin() {
         val box = EditText(this).apply {
-            hint = "Screen lock / App lock-er PIN (shudhu number)"
+            hint = "Phone-er Screen Lock PIN (shudhu number)"
             inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
         }
         AlertDialog.Builder(this)
-            .setTitle("Lock PIN")
-            .setMessage(
-                "PIN phone-e encrypted thake. WhatsApp wish ba locked app kholar shomoy " +
-                    "ei PIN diye auto unlock hobe."
-            )
+            .setTitle("Screen Lock PIN")
+            .setMessage("Phone lock thaka obosthay schedule kora WhatsApp wish pathate ei PIN lagbe.")
             .setView(box)
             .setPositiveButton("Save") { _, _ ->
                 val p = box.text.toString().trim()
                 if (p.length in 4..16 && p.all { it.isDigit() }) {
                     try {
-                        PinStore.save(this, p)
+                        PinStore.saveScreen(this, p)
                     } catch (e: Exception) {
-                        append("(PIN save hoyni: ${e.message})\n\n")
+                        append("(Screen PIN save hoyni: ${e.message})\n\n")
                     }
-                    pinBtn.text = pinLabel()
+                    screenPinBtn.text = screenPinLabel()
                 } else {
                     append("(PIN shudhu 4 theke 16 ta number hote hobe)\n\n")
                 }
             }
             .setNeutralButton("Mushe dao") { _, _ ->
-                PinStore.clear(this)
-                pinBtn.text = pinLabel()
+                PinStore.clearScreen(this)
+                screenPinBtn.text = screenPinLabel()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun askAppPin() {
+        val box = EditText(this).apply {
+            hint = "App Lock-er PIN (shudhu number)"
+            inputType = InputType.TYPE_CLASS_NUMBER or InputType.TYPE_NUMBER_VARIATION_PASSWORD
+        }
+        AlertDialog.Builder(this)
+            .setTitle("App Lock PIN")
+            .setMessage("Nabo diye kono locked app kholte bolle ei PIN diye auto unlock hobe.")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                val p = box.text.toString().trim()
+                if (p.length in 4..16 && p.all { it.isDigit() }) {
+                    try {
+                        PinStore.saveApp(this, p)
+                    } catch (e: Exception) {
+                        append("(App PIN save hoyni: ${e.message})\n\n")
+                    }
+                    appPinBtn.text = appPinLabel()
+                } else {
+                    append("(PIN shudhu 4 theke 16 ta number hote hobe)\n\n")
+                }
+            }
+            .setNeutralButton("Mushe dao") { _, _ ->
+                PinStore.clearApp(this)
+                appPinBtn.text = appPinLabel()
             }
             .setNegativeButton("Cancel", null)
             .show()
@@ -491,10 +522,6 @@ class MainActivity : Activity() {
             text = wakeLabel()
             setOnClickListener { toggleWake() }
         }
-        pinBtn = Button(this).apply {
-            text = pinLabel()
-            setOnClickListener { askPin() }
-        }
         myVoiceBtn = Button(this).apply {
             text = myVoiceLabel()
             setOnClickListener { onMyVoice() }
@@ -505,10 +532,22 @@ class MainActivity : Activity() {
         }
         val row2 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         row2.addView(wakeBtn)
-        row2.addView(pinBtn)
         row2.addView(myVoiceBtn)
         row2.addView(lockBtn)
         root.addView(row2)
+
+        screenPinBtn = Button(this).apply {
+            text = screenPinLabel()
+            setOnClickListener { askScreenPin() }
+        }
+        appPinBtn = Button(this).apply {
+            text = appPinLabel()
+            setOnClickListener { askAppPin() }
+        }
+        val row3 = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row3.addView(screenPinBtn)
+        row3.addView(appPinBtn)
+        root.addView(row3)
 
         scroll = ScrollView(this)
         chatView = TextView(this).apply {
