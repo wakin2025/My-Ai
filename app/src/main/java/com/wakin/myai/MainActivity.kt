@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.app.KeyguardManager
+import android.app.SearchManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -14,6 +15,7 @@ import android.media.AudioManager
 import android.media.AudioTrack
 import android.media.MediaPlayer
 import android.media.ToneGenerator
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -86,9 +88,10 @@ class MainActivity : Activity() {
             "kauke call dite bolle make_call, torch jwalate/bondho korte bolle toggle_torch, " +
             "volume barate/komate bolle set_volume, kichu mone rakhte bolle save_memory, " +
             "abohawa jante chaile get_weather, ar ki message ba notification ashche porhte bolle read_notifications call koro. " +
-            "Voice-to-text-e banan vul hote pare: 'মোহ' / 'মোহো' / 'moh' / 'more' mane shobshomoy 'Moho', " +
-            "'প্লেট' / 'plate' mane shobshomoy 'PLAYit', 'চলো' mane 'Choo Lo', 'কে ছাড়িয়া' mane 'Kesariya'. " +
-            "Tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
+            "play_song call korar shomoy user jei gaan-er kotha boleche (jemon 'panchi banu urti firu', 'Choo Lo', 'Moho'), " +
+            "OBOSHOI exact oi gaan-er naam-tai song parameter-e dibe — ager kono gaan (jemon 'Aadat') nijer theke boshiye dibe na! " +
+            "Voice-to-text-e shudhu chhoto banan vul thakle shudhrabe: 'মোহ' / 'মোহো' / 'moh' / 'more' -> 'Moho', " +
+            "'প্লেট' / 'plate' -> 'PLAYit', 'চলো' -> 'Choo Lo', 'কে ছাড়িয়া' -> 'Kesariya'."
     }
 
     private lateinit var chatView: TextView
@@ -1489,7 +1492,7 @@ class MainActivity : Activity() {
         val queryP = JSONObject().put("type", "STRING")
             .put("description", "Ja search korte hobe")
         val songP = JSONObject().put("type", "STRING")
-            .put("description", "Jei gaan ba video play korte hobe tar shothik naam")
+            .put("description", "User jei gaan-er exact naam boleche (ager kono gaan nijer theke dibe na)")
         val textP = JSONObject().put("type", "STRING")
             .put("description", "Jei lekha-ta screen-er box-e type korte hobe")
 
@@ -1510,7 +1513,7 @@ class MainActivity : Activity() {
         )
         decls.put(
             fn(
-                "play_song", "YouTube ba onno app-e kono gaan ba video play kore",
+                "play_song", "YouTube ba onno app-e user-er bola exact gaan ba video play kore",
                 JSONObject().put("app_name", appP).put("app_name_alt", appAltP)
                     .put("song", songP).put("reply", reply),
                 listOf("song", "reply")
