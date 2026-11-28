@@ -96,8 +96,8 @@ object AutoTask {
         targetPkg = pkg
         text = query
         val now = System.currentTimeMillis()
-        readyAt = now + 2000L
-        until = now + 22_000L
+        readyAt = now + 2200L
+        until = now + 24_000L
         lastClick = 0L
         switchedMusicTab = false
     }
@@ -388,6 +388,7 @@ object PinTyper {
     @Volatile var mode = "screen"
     @Volatile var seen = ""
     @Volatile var lastUsePassClick = 0L
+    @Volatile var waitBoxUntil = 0L
 
     fun armScreen() {
         mode = "screen"
@@ -395,14 +396,16 @@ object PinTyper {
         typing = false
         seen = ""
         lastUsePassClick = 0L
+        waitBoxUntil = 0L
     }
 
     fun armApp() {
         mode = "app"
-        armedUntil = System.currentTimeMillis() + 18_000L
+        armedUntil = System.currentTimeMillis() + 20_000L
         typing = false
         seen = ""
         lastUsePassClick = 0L
+        waitBoxUntil = 0L
     }
 
     fun isArmed() = System.currentTimeMillis() < armedUntil
@@ -1076,17 +1079,35 @@ class WaSendService : AccessibilityService() {
         val pkg = root.packageName?.toString() ?: ""
         if (pkg.startsWith("com.whatsapp") || pkg == packageName) return
 
-        // Face lock thakle age "Use password" button-e click kore
         val now = System.currentTimeMillis()
-        if (now - PinTyper.lastUsePassClick > 1500L) {
+        if (now < PinTyper.waitBoxUntil) return
+
+        // Face lock thakle age "Use password" button-e click kore keyboard ashar jonno 1.2s wait kore
+        if (now - PinTyper.lastUsePassClick > 2000L) {
             val usePass = findUsePasswordButton(root, 0)
             if (usePass != null) {
                 PinTyper.lastUsePassClick = now
+                PinTyper.waitBoxUntil = now + 1200L
                 usePass.performAction(AccessibilityNodeInfo.ACTION_CLICK)
                 return
             }
         }
 
+        // Editable password/PIN box thakle shorashori ACTION_SET_TEXT diye boshiye dey (Ridmik keyboard-er jhamela charai)
+        val editBox = findEditable(root, 0)
+        if (editBox != null) {
+            PinTyper.typing = true
+            setNodeText(editBox, pin)
+            handler.postDelayed({
+                val r = rootInActiveWindow
+                val ok = if (r != null) findEnter(r, 0) else null
+                ok?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+                handler.postDelayed({ PinTyper.disarm() }, 2500)
+            }, 600)
+            return
+        }
+
+        // Number keypad thakle ekta ekta kore digit chapbe
         for (d in pin.toSet()) {
             if (findKey(root, d, 0) == null) {
                 PinTyper.seen = describe(root)
@@ -1099,14 +1120,14 @@ class WaSendService : AccessibilityService() {
                 val r = rootInActiveWindow
                 val k = if (r != null) findKey(r, d, 0) else null
                 k?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-            }, 400L * (i + 1))
+            }, 450L * (i + 1))
         }
         handler.postDelayed({
             val r = rootInActiveWindow
             val ok = if (r != null) findEnter(r, 0) else null
             ok?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
             handler.postDelayed({ PinTyper.disarm() }, 3000)
-        }, 400L * (pin.length + 1) + 200)
+        }, 450L * (pin.length + 1) + 250)
     }
 
     private fun findKey(n: AccessibilityNodeInfo?, d: Char, depth: Int): AccessibilityNodeInfo? {
@@ -1130,7 +1151,7 @@ class WaSendService : AccessibilityService() {
         if (n == null || depth > 25) return null
         val label = (n.contentDescription?.toString() ?: n.text?.toString() ?: "")
             .trim().lowercase(Locale.ROOT)
-        if ((label == "enter" || label == "ok" || label == "done") && n.isClickable) return n
+        if ((label == "enter" || label == "ok" || label == "done" || label == "unlock") && n.isClickable) return n
         for (i in 0 until n.childCount) {
             val r = findEnter(n.getChild(i), depth + 1)
             if (r != null) return r
