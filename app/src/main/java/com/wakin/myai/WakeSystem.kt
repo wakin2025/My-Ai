@@ -214,7 +214,7 @@ object VoiceEnroller {
                     return@thread
                 }
 
-                onStatus("Ekhon bolo: 'Roza, amar kotha shuno' (4 second)...")
+                onStatus("Ekhon bolo: 'Nabo, amar kotha shuno' (4 second)...")
                 audio.startRecording()
                 val buf = ShortArray(2048)
                 var total = 0
@@ -234,7 +234,7 @@ object VoiceEnroller {
                     onDone(false, "Voice bujha jayni, ektu jore abar try koro.")
                 } else {
                     SpeakerStore.save(ctx, vec)
-                    onDone(true, "Tomar voice save hoye geche! Ekhon shudhu tomar voice-ei Roza jagbe.")
+                    onDone(true, "Tomar voice save hoye geche! Ekhon shudhu tomar voice-ei Nabo jagbe.")
                 }
             } catch (e: Throwable) {
                 onDone(false, "Shomossha hoyeche: " + (e.message ?: e.toString()).take(80))
@@ -249,8 +249,7 @@ object VoiceEnroller {
 }
 
 // ---------------------------------------------------------------
-// "Roza" shobdo-er jonno shob shomoy shune (offline).
-// MyVoice ON thakle shudhu tomar voice-ei MainActivity khulbe.
+// "Nabo" shobdo-er jonno shob shomoy shune (offline).
 // ---------------------------------------------------------------
 class WakeService : Service() {
 
@@ -261,8 +260,8 @@ class WakeService : Service() {
         const val CHANNEL = "myai_wake"
         const val NOTIF_ID = 7
 
-        val WORDS = listOf("rosa", "roza", "rosie")
-        // 10% match holei jagbe
+        // English model "Nabo" ke ei shobdo gulor moto shune
+        val WORDS = listOf("nabo", "nobo", "noble", "nova", "nab", "knob")
         const val VOICE_THRESHOLD = 0.10f
     }
 
@@ -300,7 +299,7 @@ class WakeService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
-        goForeground("Roza shuru hocche...")
+        goForeground("Nabo shuru hocche...")
         if (!started) {
             started = true
             thread { prepareModel() }
@@ -336,7 +335,7 @@ class WakeService : Service() {
         val stop = PendingIntent.getService(this, 4, stopIntent, flags)
         return Notification.Builder(this, CHANNEL)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
-            .setContentTitle("Roza")
+            .setContentTitle("Nabo")
             .setContentText(text)
             .setContentIntent(open)
             .setOngoing(true)
@@ -353,7 +352,7 @@ class WakeService : Service() {
     private fun goForeground(text: String) {
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL, "Roza", NotificationManager.IMPORTANCE_LOW)
+            NotificationChannel(CHANNEL, "Nabo", NotificationManager.IMPORTANCE_LOW)
         )
         val n = buildNotification(text)
         if (Build.VERSION.SDK_INT >= 29) {
@@ -388,7 +387,7 @@ class WakeService : Service() {
             ready = true
             handler.post { if (alive && !paused) startListening() }
         } catch (e: Throwable) {
-            updateNotification("Roza shuru hoyni: " + (e.message ?: e.toString()).take(80))
+            updateNotification("Nabo shuru hoyni: " + (e.message ?: e.toString()).take(80))
         }
     }
 
@@ -411,7 +410,7 @@ class WakeService : Service() {
             val status = if (SpeakerStore.isEnabled(this)) {
                 "Shudhu tomar voice-er jonno shunchi..."
             } else {
-                "'Roza' bolle jagbo..."
+                "'Nabo' bolle jagbo..."
             }
             updateNotification(status)
             s.startListening(object : VoskListener {
@@ -433,7 +432,7 @@ class WakeService : Service() {
                     }
                     val spk = SpeakerStore.extractSpk(hypothesis ?: "")
                     if (spk == null) {
-                        updateNotification("Shobdo khub chhoto, ektu lombo kore 'Roza' bolo")
+                        updateNotification("Shobdo khub chhoto, ektu lombo kore 'Nabo' bolo")
                         return
                     }
                     val score = SpeakerStore.similarity(saved, spk)
@@ -521,7 +520,7 @@ class WakeService : Service() {
     }
 }
 
-// Phone restart hole "Roza" abar chalu kora
+// Phone restart hole "Nabo" abar chalu kora
 class WakeBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
