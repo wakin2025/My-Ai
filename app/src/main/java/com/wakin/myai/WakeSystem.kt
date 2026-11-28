@@ -1,6 +1,7 @@
 package com.wakin.myai
 
 import android.Manifest
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -20,6 +21,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import org.json.JSONArray
 import org.json.JSONObject
 import org.vosk.Model
@@ -35,9 +37,6 @@ import java.util.zip.ZipInputStream
 import kotlin.concurrent.thread
 import kotlin.math.sqrt
 
-// ---------------------------------------------------------------
-// Tomar nijer voice-er fingerprint save, ON/OFF ar match kore
-// ---------------------------------------------------------------
 object SpeakerStore {
     private const val PREFS = "myai_spk"
     private const val KEY = "vec"
@@ -105,9 +104,6 @@ object SpeakerStore {
     }
 }
 
-// ---------------------------------------------------------------
-// Model download ar unzip korar helper
-// ---------------------------------------------------------------
 object VoskFiles {
     const val MODEL_URL = "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
     const val MODEL_DIR = "vosk-model-small-en-us-0.15"
@@ -175,9 +171,6 @@ object VoskFiles {
     }
 }
 
-// ---------------------------------------------------------------
-// Tomar voice 4 second record kore save kore
-// ---------------------------------------------------------------
 object VoiceEnroller {
     fun enroll(
         ctx: Context,
@@ -248,9 +241,6 @@ object VoiceEnroller {
     }
 }
 
-// ---------------------------------------------------------------
-// "Nabo" shobdo-er jonno shob shomoy shune (offline).
-// ---------------------------------------------------------------
 class WakeService : Service() {
 
     companion object {
@@ -260,7 +250,6 @@ class WakeService : Service() {
         const val CHANNEL = "myai_wake"
         const val NOTIF_ID = 7
 
-        // English model "Nabo" ke ei shobdo gulor moto shune
         val WORDS = listOf("nabo", "nobo", "noble", "nova", "nab", "knob")
         const val VOICE_THRESHOLD = 0.10f
     }
@@ -291,6 +280,14 @@ class WakeService : Service() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        WakeWatchdog.schedule(this)
+    }
+
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        super.onTaskRemoved(rootIntent)
+        if (getSharedPreferences("myai", MODE_PRIVATE).getBoolean("wake_on", false)) {
+            WakeWatchdog.scheduleSoon(this)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -520,13 +517,51 @@ class WakeService : Service() {
     }
 }
 
-// Phone restart hole "Nabo" abar chalu kora
 class WakeBootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
         val on = context.getSharedPreferences("myai", Context.MODE_PRIVATE)
             .getBoolean("wake_on", false)
         if (!on) return
+        if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
+        context.startForegroundService(Intent(context, WakeService::class.java))
+    }
+}
+
+object WakeWatchdog {
+    fun schedule(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val i = Intent(ctx, WakeWatchdogReceiver::class.java)
+        val pi = PendingIntent.getBroadcast(
+            ctx, 99, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.setInexactRepeating(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            SystemClock.elapsedRealtime() + 180_000L,
+            180_000L,
+            pi
+        )
+    }
+
+    fun scheduleSoon(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val i = Intent(ctx, WakeWatchdogReceiver::class.java)
+        val pi = PendingIntent.getBroadcast(
+            ctx, 98, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+        am.set(
+            AlarmManager.ELAPSED_REALTIME_WAKEUP,
+            SystemClock.elapsedRealtime() + 3000L,
+            pi
+        )
+    }
+}
+
+class WakeWatchdogReceiver : BroadcastReceiver() {
+    override fun onReceive(context: Context, intent: Intent) {
+        val on = context.getSharedPreferences("myai", Context.MODE_PRIVATE)
+            .getBoolean("wake_on", false)
+        if (!on || WakeService.instance != null) return
         if (context.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) return
         context.startForegroundService(Intent(context, WakeService::class.java))
     }
