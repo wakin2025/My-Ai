@@ -59,7 +59,7 @@ class MainActivity : Activity() {
         "উত্তর খুব ছোট (১-২ লাইন), মিষ্টি আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
         "ইউজার বাংলায় কথা বললে খাঁটি বাংলা অক্ষরে উত্তর দাও (বাংলিশে নয়), আর ইংরেজিতে কথা বললে বা ইংরেজি চাইলে সুন্দর ইংরেজিতে উত্তর দাও।"
 
-    private class Reply(val text: String, val note: String)
+    private class Reply(val text: String, val note: String, val silent: Boolean = false)
 
     private fun systemText(): String {
         val now = SimpleDateFormat("EEEE, d MMMM yyyy, HH:mm", Locale.ENGLISH).format(Date())
@@ -86,8 +86,9 @@ class MainActivity : Activity() {
             "kauke call dite bolle make_call, torch jwalate/bondho korte bolle toggle_torch, " +
             "volume barate/komate bolle set_volume, kichu mone rakhte bolle save_memory, " +
             "abohawa jante chaile get_weather, ar ki message ba notification ashche porhte bolle read_notifications call koro. " +
-            "Voice-to-text-e gaan-er naam-e banan vul hote pare (jemon 'কে ছাড়িয়া' mane 'Kesariya', 'Kanti/Gandhi' mane 'gaan-ti'), " +
-            "tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
+            "Voice-to-text-e banan vul hote pare: 'মোহ' / 'মোহো' / 'moh' / 'more' mane shobshomoy 'Moho', " +
+            "'প্লেট' / 'plate' mane shobshomoy 'PLAYit', 'চলো' mane 'Choo Lo', 'কে ছাড়িয়া' mane 'Kesariya'. " +
+            "Tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
     }
 
     private lateinit var chatView: TextView
@@ -773,7 +774,6 @@ class MainActivity : Activity() {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, langTag)
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false)
-            // Kotha bolar majhe ektu thamleo jeno mic sathe sathe bondho na hoy
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 5000L)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 10000L)
@@ -997,7 +997,6 @@ class MainActivity : Activity() {
         if (text.isEmpty()) return
 
         val lower = text.lowercase(Locale.ROOT)
-        // Continuous mic bondho korar command
         val stopWords = listOf("বন্ধ করো", "চুপ করো", "ঘুমাও", "থামো", "bondho koro", "chup koro", "ghumao", "stop listening", "bye")
         if (continuousMode && stopWords.any { lower == it || lower.startsWith(it) }) {
             input.setText("")
@@ -1047,10 +1046,14 @@ class MainActivity : Activity() {
                 val reply = callGemini(key)
                 history.put(message("model", reply.text))
                 runOnUiThread {
-                    append("AI: ${reply.text}\n")
+                    if (reply.text.isNotEmpty()) append("AI: ${reply.text}\n")
                     if (reply.note.isNotEmpty()) append("(${reply.note})\n")
                     append("\n")
-                    if (shouldSpeak) speak(reply.text) else onSpeakFinished()
+                    if (shouldSpeak && !reply.silent && reply.text.isNotEmpty()) {
+                        speak(reply.text)
+                    } else {
+                        onSpeakFinished()
+                    }
                 }
             } catch (e: Exception) {
                 removeFromHistory(userMsg)
@@ -1135,21 +1138,30 @@ class MainActivity : Activity() {
 
         val texts = ArrayList<String>()
         val notes = ArrayList<String>()
+        var silent = false
         for (i in 0 until parts.length()) {
             val p = parts.getJSONObject(i)
             val fc = p.optJSONObject("functionCall")
             if (fc != null) {
-                val r = runAction(fc.optString("name"), fc.optJSONObject("args"))
+                val fnName = fc.optString("name")
+                val r = runAction(fnName, fc.optJSONObject("args"))
                 if (r.first.isNotEmpty()) texts.add(r.first)
                 if (r.second.isNotEmpty()) notes.add(r.second)
+                if (fnName in listOf(
+                        "open_app", "search_in_app", "play_song",
+                        "type_text", "make_call", "toggle_torch", "set_volume"
+                    ) && r.second.isNotEmpty()
+                ) {
+                    silent = true
+                }
             } else {
                 val t = p.optString("text")
                 if (t.isNotEmpty()) texts.add(t)
             }
         }
         val text = texts.joinToString(" ").trim()
-        if (text.isEmpty()) return empty
-        return Reply(text, notes.joinToString("\n"))
+        if (text.isEmpty() && notes.isEmpty()) return empty
+        return Reply(text, notes.joinToString("\n"), silent)
     }
 
     private fun isNotifAccessOn(): Boolean {
@@ -1212,7 +1224,7 @@ class MainActivity : Activity() {
                 if (opened != null) {
                     wakeMode = false
                     continuousMode = false
-                    Pair(reply, "Opened: ${opened.label}")
+                    Pair("", "Opened: ${opened.label}")
                 } else {
                     Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
                 }
@@ -1228,7 +1240,7 @@ class MainActivity : Activity() {
                     if (note.isNotEmpty()) {
                         wakeMode = false
                         continuousMode = false
-                        Pair(reply, note)
+                        Pair("", note)
                     } else {
                         Pair("ফোনে $appName অ্যাপটা খুঁজে পাইনি।", "")
                     }
@@ -1244,7 +1256,7 @@ class MainActivity : Activity() {
                     val note = AppHelper.playSong(this, listOf(appName, alt), song)
                     wakeMode = false
                     continuousMode = false
-                    Pair(reply, note)
+                    Pair("", note)
                 }
             }
             "type_text" -> {
@@ -1261,7 +1273,7 @@ class MainActivity : Activity() {
                         wakeMode = false
                         continuousMode = false
                         runOnUiThread { handler.postDelayed({ moveTaskToBack(true) }, 400) }
-                        Pair(reply, "Typing: $txt")
+                        Pair("", "Typing: $txt")
                     }
                 }
             }
@@ -1282,20 +1294,20 @@ class MainActivity : Activity() {
                         PhoneControl.callNumber(this, m.number, direct)
                         wakeMode = false
                         continuousMode = false
-                        Pair(reply, "Calling: ${m.name}")
+                        Pair("", "Calling: ${m.name}")
                     }
                 }
             }
             "toggle_torch" -> {
                 val on = a.optBoolean("on", true)
                 val ok = PhoneControl.setTorch(this, on)
-                if (ok) Pair(reply, if (on) "Torch ON" else "Torch OFF")
+                if (ok) Pair("", if (on) "Torch ON" else "Torch OFF")
                 else Pair("টর্চ চালু করা যায়নি।", "")
             }
             "set_volume" -> {
                 val act = a.optString("action", "up")
                 PhoneControl.changeVolume(this, act)
-                Pair(reply, "Volume: $act")
+                Pair("", "Volume: $act")
             }
             "save_memory" -> {
                 val fact = a.optString("fact", "").trim()
