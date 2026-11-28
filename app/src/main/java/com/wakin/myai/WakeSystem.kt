@@ -250,7 +250,10 @@ class WakeService : Service() {
         const val CHANNEL = "myai_wake"
         const val NOTIF_ID = 7
 
-        val WORDS = listOf("nabo", "nobo", "noble", "nova", "nab", "knob")
+        // Shudhu puro "Nabo" shobdo-i wake korbe
+        val WORDS = listOf("nabo", "nobo", "noble", "nova")
+        // "na" / "no" bolle jeno vul kore na jage, tai egulo alada rakha hoyeche
+        val IGNORE_WORDS = listOf("no", "nah", "not", "now", "know", "name", "[unk]")
         const val VOICE_THRESHOLD = 0.10f
     }
 
@@ -374,7 +377,7 @@ class WakeService : Service() {
             updateNotification("Model load hocche...")
             val m = Model(mainDir.absolutePath)
             val sm = SpeakerModel(spkDir.absolutePath)
-            val grammar = JSONArray(WORDS + listOf("[unk]")).toString()
+            val grammar = JSONArray(WORDS + IGNORE_WORDS).toString()
             val r = Recognizer(m, 16000.0f, grammar)
             r.setSpeakerModel(sm)
 
@@ -465,7 +468,8 @@ class WakeService : Service() {
         } catch (e: Exception) {
             return false
         }
-        return WORDS.any { t.contains(it) }
+        val tokens = t.split(" ").filter { it.isNotEmpty() }
+        return tokens.any { it in WORDS }
     }
 
     private fun triggerWake() {
