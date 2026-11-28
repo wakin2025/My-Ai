@@ -11,6 +11,7 @@ import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.graphics.Rect
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -72,19 +73,21 @@ object WishState {
 }
 
 // ---------------------------------------------------------------
-// Onno app-e auto search ba auto lekha (Accessibility diye)
+// Onno app-e auto search, auto lekha ar YouTube auto play
 // ---------------------------------------------------------------
 object AutoTask {
-    @Volatile var mode = "" // "search" ba "type"
+    @Volatile var mode = "" // "search", "type", "play_yt"
     @Volatile var targetPkg = ""
     @Volatile var text = ""
     @Volatile var until = 0L
+    @Volatile var readyAt = 0L
     @Volatile var lastClick = 0L
 
     fun armSearch(pkg: String, query: String) {
         mode = "search"
         targetPkg = pkg
         text = query
+        readyAt = 0L
         until = System.currentTimeMillis() + 18_000L
         lastClick = 0L
     }
@@ -93,7 +96,18 @@ object AutoTask {
         mode = "type"
         targetPkg = ""
         text = t
+        readyAt = 0L
         until = System.currentTimeMillis() + 15_000L
+        lastClick = 0L
+    }
+
+    fun armPlayYt() {
+        mode = "play_yt"
+        targetPkg = "com.google.android.youtube"
+        text = ""
+        val now = System.currentTimeMillis()
+        readyAt = now + 2200L
+        until = now + 15_000L
         lastClick = 0L
     }
 
@@ -133,6 +147,10 @@ object AppHelper {
         "গুগল" to "google"
     )
 
+    private fun armAppLockIfNeeded(ctx: Context) {
+        if (PinStore.has(ctx)) PinTyper.armShort()
+    }
+
     fun findApp(ctx: Context, rawNames: List<String>): AppInfo? {
         val qs = ArrayList<String>()
         for (r in rawNames) {
@@ -169,6 +187,7 @@ object AppHelper {
         val app = findApp(ctx, names) ?: return null
         val i = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return null
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        armAppLockIfNeeded(ctx)
         ctx.startActivity(i)
         return app
     }
@@ -176,8 +195,8 @@ object AppHelper {
     fun searchInApp(ctx: Context, appNames: List<String>, query: String): String {
         val q = query.trim()
         val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
+        armAppLockIfNeeded(ctx)
 
-        // YouTube direct search
         if (combined.contains("youtube") || combined.contains("yt") || combined.contains("ইউটিউব")) {
             try {
                 val i = Intent(Intent.ACTION_SEARCH).apply {
@@ -195,7 +214,6 @@ object AppHelper {
             }
         }
 
-        // Google / Chrome / kono app na bolle
         if (combined.isBlank() || combined.contains("google") || combined.contains("chrome") ||
             combined.contains("গুগল") || combined.contains("ক্রোম")
         ) {
@@ -205,7 +223,6 @@ object AppHelper {
             return "Google-e search: $q"
         }
 
-        // Play Store
         if (combined.contains("play store") || combined.contains("playstore") || combined.contains("প্লে স্টোর")) {
             val i = Intent(Intent.ACTION_VIEW, Uri.parse("market://search?q=" + Uri.encode(q)))
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -215,7 +232,6 @@ object AppHelper {
             } catch (e: Exception) {}
         }
 
-        // Maps
         if (combined.contains("map") || combined.contains("ম্যাপ")) {
             val i = Intent(Intent.ACTION_VIEW, Uri.parse("geo:0,0?q=" + Uri.encode(q)))
             i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -225,7 +241,6 @@ object AppHelper {
             } catch (e: Exception) {}
         }
 
-        // Onno je kono app: app khule Accessibility diye search box-e likhe dibe
         val app = findApp(ctx, appNames) ?: return ""
         val launch = ctx.packageManager.getLaunchIntentForPackage(app.pkg) ?: return ""
         launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -239,13 +254,24 @@ object AppHelper {
         val combined = appNames.joinToString(" ").lowercase(Locale.ROOT)
         val wantDefaultYt = combined.isBlank() || combined.contains("youtube") ||
             combined.contains("yt") || combined.contains("ইউটিউব")
+        armAppLockIfNeeded(ctx)
 
-        val pkg = if (wantDefaultYt) {
-            "com.google.android.youtube"
-        } else {
-            findApp(ctx, appNames)?.pkg ?: "com.google.android.youtube"
+        if (wantDefaultYt) {
+            try {
+                val i = Intent(Intent.ACTION_SEARCH).apply {
+                    setPackage("com.google.android.youtube")
+                    putExtra(SearchManager.QUERY, q)
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                AutoTask.armPlayYt()
+                ctx.startActivity(i)
+                return "YouTube play: $q"
+            } catch (e: Exception) {
+                return searchInApp(ctx, listOf("youtube"), q)
+            }
         }
 
+        val pkg = findApp(ctx, appNames)?.pkg ?: "com.google.android.youtube"
         try {
             val i = Intent(MediaStore.INTENT_ACTION_MEDIA_PLAY_FROM_SEARCH).apply {
                 setPackage(pkg)
@@ -256,8 +282,7 @@ object AppHelper {
             ctx.startActivity(i)
             return "Play: $q"
         } catch (e: Exception) {
-            // Fallback: YouTube search ba app search
-            return searchInApp(ctx, if (wantDefaultYt) listOf("youtube") else appNames, q)
+            return searchInApp(ctx, appNames, q)
         }
     }
 
@@ -325,7 +350,7 @@ object PinStore {
     }
 }
 
-// Shudhu wish pathanor shomoy, kichukkhon-er jonno PIN chapar onumoti dey
+// Wish pathano ba App Lock kholar shomoy PIN chapar onumoti dey
 object PinTyper {
     @Volatile
     var armedUntil = 0L
@@ -338,6 +363,12 @@ object PinTyper {
 
     fun arm() {
         armedUntil = System.currentTimeMillis() + 40_000L
+        typing = false
+        seen = ""
+    }
+
+    fun armShort() {
+        armedUntil = System.currentTimeMillis() + 12_000L
         typing = false
         seen = ""
     }
@@ -737,7 +768,7 @@ class WishActivity : Activity() {
 }
 
 // ---------------------------------------------------------------
-// Accessibility service: WhatsApp Send, PIN unlock, Auto Search & Auto Type
+// Accessibility service: WhatsApp Send, PIN unlock, Auto Search, Auto Type & YT Play
 // ---------------------------------------------------------------
 class WaSendService : AccessibilityService() {
 
@@ -772,7 +803,7 @@ class WaSendService : AccessibilityService() {
         }
     }
 
-    // ---------- onno app-e search ba lekha ----------
+    // ---------- onno app-e search, lekha ba YouTube first video click ----------
 
     private fun handleAutoTask() {
         val root = rootInActiveWindow ?: return
@@ -781,6 +812,17 @@ class WaSendService : AccessibilityService() {
 
         val mode = AutoTask.mode
         val text = AutoTask.text
+
+        if (mode == "play_yt") {
+            if (pkg != "com.google.android.youtube") return
+            if (System.currentTimeMillis() < AutoTask.readyAt) return
+            val video = findFirstYtVideo(root, 0) ?: return
+            if (video.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                AutoTask.clear()
+            }
+            return
+        }
+
         if (mode == "type") {
             val edit = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
                 ?.takeIf { it.isEditable } ?: findEditable(root, 0) ?: return
@@ -812,6 +854,26 @@ class WaSendService : AccessibilityService() {
                 }
             }
         }
+    }
+
+    private fun findFirstYtVideo(n: AccessibilityNodeInfo?, depth: Int): AccessibilityNodeInfo? {
+        if (n == null || depth > 25) return null
+        if (n.isClickable && n.isVisibleToUser && !n.isEditable) {
+            val rect = Rect()
+            n.getBoundsInScreen(rect)
+            val desc = (n.contentDescription?.toString() ?: "").lowercase(Locale.ROOT)
+            // Top bar ar chhoto chip/button bad diye boro video card khuje
+            if (rect.top > 280 && rect.height() > 220 && rect.width() > 300) {
+                if (!desc.contains("ad ") && !desc.contains("sponsored")) {
+                    return n
+                }
+            }
+        }
+        for (i in 0 until n.childCount) {
+            val r = findFirstYtVideo(n.getChild(i), depth + 1)
+            if (r != null) return r
+        }
+        return null
     }
 
     private fun setNodeText(node: AccessibilityNodeInfo, text: String): Boolean {
@@ -851,13 +913,13 @@ class WaSendService : AccessibilityService() {
         return null
     }
 
-    // ---------- lock screen-er PIN pad-e number chapa ----------
+    // ---------- lock screen ba app lock-er PIN pad-e number chapa ----------
 
     private fun tryTypePin() {
         val pin = PinStore.get(this) ?: return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: ""
-        if (pkg.startsWith("com.whatsapp") || pkg == packageName) return
+        if (pkg.startsWith("com.whatsapp") || pkg == packageName || pkg == "com.google.android.youtube") return
 
         for (d in pin.toSet()) {
             if (findKey(root, d, 0) == null) {
