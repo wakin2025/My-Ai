@@ -145,7 +145,7 @@ object AppHelper {
     )
 
     private fun armAppLockIfNeeded(ctx: Context) {
-        if (PinStore.has(ctx)) PinTyper.armShort()
+        if (PinStore.hasApp(ctx)) PinTyper.armApp()
     }
 
     fun findApp(ctx: Context, rawNames: List<String>): AppInfo? {
@@ -311,9 +311,13 @@ object AppHelper {
     }
 }
 
+// ---------------------------------------------------------------
+// Screen Lock PIN ar App Lock PIN alada vabe encrypted save kore
+// ---------------------------------------------------------------
 object PinStore {
     private const val PREFS = "myai_pin"
-    private const val KEY = "blob"
+    private const val KEY_SCREEN = "screen_blob"
+    private const val KEY_APP = "app_blob"
     private const val ALIAS = "myai_pin_key"
 
     private fun secretKey(): SecretKey {
@@ -333,19 +337,19 @@ object PinStore {
         return kg.generateKey()
     }
 
-    fun has(ctx: Context): Boolean =
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(KEY)
+    private fun hasKey(ctx: Context, key: String): Boolean =
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).contains(key)
 
-    fun save(ctx: Context, pin: String) {
+    private fun saveKey(ctx: Context, key: String, pin: String) {
         val c = Cipher.getInstance("AES/GCM/NoPadding")
         c.init(Cipher.ENCRYPT_MODE, secretKey())
         val enc = c.doFinal(pin.toByteArray())
         val blob = Base64.encodeToString(c.iv + enc, Base64.NO_WRAP)
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(KEY, blob).apply()
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putString(key, blob).apply()
     }
 
-    fun get(ctx: Context): String? {
-        val blob = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(KEY, null)
+    private fun getKey(ctx: Context, key: String): String? {
+        val blob = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getString(key, null)
             ?: return null
         return try {
             val all = Base64.decode(blob, Base64.NO_WRAP)
@@ -359,23 +363,36 @@ object PinStore {
         }
     }
 
-    fun clear(ctx: Context) {
-        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(KEY).apply()
+    private fun clearKey(ctx: Context, key: String) {
+        ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().remove(key).apply()
     }
+
+    fun hasScreen(ctx: Context) = hasKey(ctx, KEY_SCREEN)
+    fun saveScreen(ctx: Context, pin: String) = saveKey(ctx, KEY_SCREEN, pin)
+    fun getScreen(ctx: Context) = getKey(ctx, KEY_SCREEN)
+    fun clearScreen(ctx: Context) = clearKey(ctx, KEY_SCREEN)
+
+    fun hasApp(ctx: Context) = hasKey(ctx, KEY_APP)
+    fun saveApp(ctx: Context, pin: String) = saveKey(ctx, KEY_APP, pin)
+    fun getApp(ctx: Context) = getKey(ctx, KEY_APP)
+    fun clearApp(ctx: Context) = clearKey(ctx, KEY_APP)
 }
 
 object PinTyper {
     @Volatile var armedUntil = 0L
     @Volatile var typing = false
+    @Volatile var mode = "screen" // "screen" ba "app"
     @Volatile var seen = ""
 
-    fun arm() {
+    fun armScreen() {
+        mode = "screen"
         armedUntil = System.currentTimeMillis() + 40_000L
         typing = false
         seen = ""
     }
 
-    fun armShort() {
+    fun armApp() {
+        mode = "app"
         armedUntil = System.currentTimeMillis() + 12_000L
         typing = false
         seen = ""
@@ -690,7 +707,7 @@ class WishActivity : Activity() {
             return
         }
         wasLocked = true
-        if (km.isKeyguardSecure && PinStore.has(this)) PinTyper.arm()
+        if (km.isKeyguardSecure && PinStore.hasScreen(this)) PinTyper.armScreen()
         try {
             km.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
                 override fun onDismissSucceeded() {
@@ -727,6 +744,7 @@ class WishActivity : Activity() {
 
     private fun launchWhatsApp(name: String, number: String, message: String) {
         WishState.arm(name, wasLocked)
+        if (PinStore.hasApp(this)) PinTyper.armApp()
         val uri = Uri.parse("https://wa.me/$number?text=" + Uri.encode(message))
         var ok = false
         for (pkg in listOf("com.whatsapp", "com.whatsapp.w4b")) {
@@ -796,8 +814,6 @@ class WaSendService : AccessibilityService() {
         }
     }
 
-    // ---------- Uninstall Lock protection ----------
-
     private fun checkUninstallBlock() {
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString()?.lowercase(Locale.ROOT) ?: return
@@ -832,8 +848,6 @@ class WaSendService : AccessibilityService() {
         }
         return sb.toString()
     }
-
-    // ---------- onno app-e search, lekha ba auto play ----------
 
     private fun handleAutoTask() {
         val root = rootInActiveWindow ?: return
@@ -974,7 +988,8 @@ class WaSendService : AccessibilityService() {
     }
 
     private fun tryTypePin() {
-        val pin = PinStore.get(this) ?: return
+        val pin = if (PinTyper.mode == "app") PinStore.getApp(this) else PinStore.getScreen(this)
+        if (pin.isNullOrEmpty()) return
         val root = rootInActiveWindow ?: return
         val pkg = root.packageName?.toString() ?: ""
         if (pkg.startsWith("com.whatsapp") || pkg == packageName || pkg == "com.google.android.youtube") return
