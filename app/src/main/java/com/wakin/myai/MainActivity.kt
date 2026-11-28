@@ -66,7 +66,9 @@ class MainActivity : Activity() {
         } else {
             " Reply in English."
         }
-        return SYSTEM + langRule +
+        val mem = MemoryStore.allText(this)
+        val memRule = if (mem.isNotEmpty()) " User-er mone rakha tothyo: $mem." else ""
+        return SYSTEM + langRule + memRule +
             " Ekhon shomoy: $now (24-hour). " +
             "User alarm set korte, dekhte, bondho korte ba mushe dite chaile function call koro, " +
             "nijer theke bole dio na je kaj hoye geche. Shomoy shob shomoy 24-hour e dao " +
@@ -78,7 +80,10 @@ class MainActivity : Activity() {
             "User 'X minute por' ba 'ekhon theke' bolle schedule_whatsapp-e shudhu in_minutes dao " +
             "(hour/minute dio na). 'ratri 9 tay'-er moto spasto shomoy bolle hour ar minute dao. " +
             "User kono app khulte bolle open_app, kono app-e kichu search korte bolle search_in_app, " +
-            "kono gaan ba video play korte bolle play_song, ar kono jaygay kichu likhte bolle type_text function call koro. " +
+            "kono gaan ba video play korte bolle play_song, kono jaygay kichu likhte bolle type_text, " +
+            "kauke call dite bolle make_call, torch jwalate/bondho korte bolle toggle_torch, " +
+            "volume barate/komate bolle set_volume, kichu mone rakhte bolle save_memory, " +
+            "ar abohawa (weather) jante chaile get_weather function call koro. " +
             "Voice-to-text-e gaan-er naam-e banan vul hote pare (jemon 'কে ছাড়িয়া' mane 'Kesariya', 'Kanti/Gandhi' mane 'gaan-ti'), " +
             "tai budhhi kore ashol shothik gaan-er naam-ta play_song-e dao."
     }
@@ -457,6 +462,14 @@ class MainActivity : Activity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 5) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                append("(Call permission peyechi, ekhon abar bolo)\n\n")
+            } else {
+                append("(Call permission na dile direct call hobe na)\n\n")
+            }
+            return
+        }
         if (requestCode == 4) {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 onMyVoice()
@@ -799,8 +812,9 @@ class MainActivity : Activity() {
             } catch (e: Exception) {
                 removeFromHistory(userMsg)
                 runOnUiThread {
-                    append("Error: ${e.message}\n\n")
-                    if (wakeMode) handler.postDelayed({ finishWake() }, 4000)
+                    stopSpeaking()
+                    append("Network/Error: ${e.message}\n\n")
+                    if (wakeMode) handler.postDelayed({ finishWake() }, 3000)
                 }
             } finally {
                 busy = false
@@ -995,6 +1009,52 @@ class MainActivity : Activity() {
                     }
                 }
             }
+            "make_call" -> {
+                val cName = a.optString("name", "").trim()
+                val cAlt = a.optString("name_alt", "").trim()
+                if (checkSelfPermission(Manifest.permission.READ_CONTACTS) != PackageManager.PERMISSION_GRANTED) {
+                    runOnUiThread { requestPermissions(arrayOf(Manifest.permission.READ_CONTACTS), 2) }
+                    Pair("কন্টাক্টস পারমিশন দাও, তারপর আবার বলো।", "")
+                } else {
+                    val found = WaContacts.find(this, listOf(cName, cAlt))
+                    val m = found.match
+                    if (m == null) {
+                        Pair("কন্টাক্টে $cName খুঁজে পাইনি।", "")
+                    } else {
+                        val direct = checkSelfPermission(Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED
+                        if (!direct) runOnUiThread { requestPermissions(arrayOf(Manifest.permission.CALL_PHONE), 5) }
+                        PhoneControl.callNumber(this, m.number, direct)
+                        wakeMode = false
+                        Pair(reply, "Calling: ${m.name}")
+                    }
+                }
+            }
+            "toggle_torch" -> {
+                val on = a.optBoolean("on", true)
+                val ok = PhoneControl.setTorch(this, on)
+                if (ok) Pair(reply, if (on) "Torch ON" else "Torch OFF")
+                else Pair("টর্চ চালু করা যায়নি।", "")
+            }
+            "set_volume" -> {
+                val act = a.optString("action", "up")
+                PhoneControl.changeVolume(this, act)
+                Pair(reply, "Volume: $act")
+            }
+            "save_memory" -> {
+                val fact = a.optString("fact", "").trim()
+                if (fact.isNotEmpty()) {
+                    MemoryStore.add(this, fact)
+                    Pair(reply, "Saved: $fact")
+                } else {
+                    Pair("কী মনে রাখতে হবে বুঝতে পারিনি।", "")
+                }
+            }
+            "get_weather" -> {
+                val city = a.optString("city", "Bhairab")
+                val w = WeatherHelper.get(city)
+                if (w.isNotEmpty()) Pair("$city এর আবহাওয়া এখন: $w", "Weather: $w")
+                else Pair("আবহাওয়ার খবর পাওয়া যায়নি।", "")
+            }
             else -> Pair(reply, "")
         }
     }
@@ -1182,6 +1242,47 @@ class MainActivity : Activity() {
                 "type_text", "Ager app-er text box-e kono kichu auto likhe dey",
                 JSONObject().put("text", textP).put("reply", reply),
                 listOf("text", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "make_call", "Kono contact-ke phone call dey",
+                JSONObject().put("name", nameP).put("name_alt", nameAlt).put("reply", reply),
+                listOf("name", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "toggle_torch", "Phone-er flashlight/torch ON ba OFF kore",
+                JSONObject().put("on", JSONObject().put("type", "BOOLEAN")).put("reply", reply),
+                listOf("on", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "set_volume", "Phone-er volume baray, komay, max ba mute kore",
+                JSONObject().put(
+                    "action",
+                    JSONObject().put("type", "STRING").put("description", "up, down, max, or mute")
+                ).put("reply", reply),
+                listOf("action", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "save_memory", "User-er kono kotha ba tothyo mone rakhar jonno save kore",
+                JSONObject().put("fact", JSONObject().put("type", "STRING")).put("reply", reply),
+                listOf("fact", "reply")
+            )
+        )
+        decls.put(
+            fn(
+                "get_weather", "Kono shohore ajker abohawa (weather) jane",
+                JSONObject().put(
+                    "city",
+                    JSONObject().put("type", "STRING").put("description", "City name in English, default Bhairab")
+                ).put("reply", reply),
+                listOf("reply")
             )
         )
 
