@@ -52,7 +52,7 @@ class MainActivity : Activity() {
         "gemini-3.1-flash-lite"
     )
 
-    private val SYSTEM = "তুমি রোজা, ওয়াকিনের ব্যক্তিগত এআই সহকারী। তোমার নাম রোজা। " +
+    private val SYSTEM = "তুমি নাবো, ওয়াকিনের ব্যক্তিগত এআই সহকারী। তোমার নাম নাবো। " +
         "উত্তর খুব ছোট (১-২ লাইন) আর সহজ রাখো। উত্তর জোরে পড়া হবে, তাই স্টার (*), মার্কডাউন বা ইমোজি ব্যবহার করবে না। " +
         "ইউজার বাংলায় কথা বললে বা বাংলা মোডে থাকলে সবসময় খাঁটি বাংলা অক্ষরে উত্তর দাও, কখনোই বাংলিশে লিখবে না। " +
         "ইউজার ইংরেজিতে বললে ইংরেজিতে উত্তর দাও।"
@@ -163,9 +163,9 @@ class MainActivity : Activity() {
         if (SpeakerStore.has(this)) {
             val isOn = SpeakerStore.isEnabled(this)
             val msg = if (isOn) {
-                "Tomar voice save kora ache ar ekhon ON ache (shudhu tomar voice-ei Roza jagbe)."
+                "Tomar voice save kora ache ar ekhon ON ache (shudhu tomar voice-ei Nabo jagbe)."
             } else {
-                "Tomar voice save kora ache, kintu ekhon OFF ache (je keu Roza bollei jagbe)."
+                "Tomar voice save kora ache, kintu ekhon OFF ache (je keu Nabo bollei jagbe)."
             }
             AlertDialog.Builder(this)
                 .setTitle("My Voice")
@@ -183,7 +183,7 @@ class MainActivity : Activity() {
                 .setTitle("My Voice")
                 .setMessage(
                     "Record chaple 4 second shomoy pabe. Tokhon normal golar awaje bolbe: " +
-                        "'Roza, amar kotha shuno'."
+                        "'Nabo, amar kotha shuno'."
                 )
                 .setPositiveButton("Record") { _, _ -> startVoiceEnroll() }
                 .setNegativeButton("Cancel", null)
@@ -241,7 +241,7 @@ class MainActivity : Activity() {
             .show()
     }
 
-    private fun wakeLabel() = if (WakeService.instance != null) "Roza: ON" else "Roza: OFF"
+    private fun wakeLabel() = if (WakeService.instance != null) "Nabo: ON" else "Nabo: OFF"
 
     private fun toggleWake() {
         val prefs = getSharedPreferences("myai", MODE_PRIVATE)
@@ -465,7 +465,7 @@ class MainActivity : Activity() {
             if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 toggleWake()
             } else {
-                append("(Mic permission na dile Roza shunte parbe na)\n\n")
+                append("(Mic permission na dile Nabo shunte parbe na)\n\n")
             }
             return
         }
@@ -547,9 +547,9 @@ class MainActivity : Activity() {
         voiceBtn.text = voiceName
         getSharedPreferences("myai", MODE_PRIVATE).edit().putString("voice", voiceName).apply()
         val sample = if (langTag == "bn-BD") {
-            "আমি রোজা, তোমার ব্যক্তিগত এআই সহকারী।"
+            "আমি নাবো, তোমার ব্যক্তিগত এআই সহকারী।"
         } else {
-            "Hi, I am Roza, your personal assistant."
+            "Hi, I am Nabo, your personal assistant."
         }
         speak(sample)
     }
@@ -745,6 +745,28 @@ class MainActivity : Activity() {
     private fun sendMessage() {
         val text = input.text.toString().trim()
         if (text.isEmpty()) return
+
+        // "kothai aso" bolle phone silent thakleo full volume kore uttor dibe
+        val lower = text.lowercase(Locale.ROOT)
+        val findKeywords = listOf("কোথায়", "কোথায়", "কই", "kothai", "kothay", "koi", "where are you")
+        if (findKeywords.any { lower.contains(it) }) {
+            input.setText("")
+            append("Tumi: $text\n\n")
+            val replyText = "আমি এখানে আছি! আমি এখানে আছি!"
+            append("AI: $replyText\n\n")
+            try {
+                val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+                am.setStreamVolume(
+                    AudioManager.STREAM_MUSIC,
+                    am.getStreamMaxVolume(AudioManager.STREAM_MUSIC),
+                    0
+                )
+            } catch (e: Exception) {
+            }
+            speak(replyText)
+            return
+        }
+
         val key = getKey()
         if (key.isEmpty()) {
             askKey()
